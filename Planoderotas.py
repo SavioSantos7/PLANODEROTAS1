@@ -1204,6 +1204,368 @@ def build_demand_vs_output_vs_plan(
 
 
 # =========================
+# GERAÇÃO DE RELATÓRIO PDF
+# =========================
+def generate_pdf_report(
+    output_final: pd.DataFrame,
+    saldo_final: pd.DataFrame,
+    analyses: dict,
+    isdata: pd.DataFrame,
+    occupancy_m3: float,
+    occupancy_kg: float,
+) -> bytes:
+    """Gera um relatório PDF completo com métricas, gráficos e tabelas."""
+    import io as _io
+    from datetime import datetime
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        HRFlowable, PageBreak, Image as RLImage,
+    )
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    import plotly.express as px
+    import plotly.io as pio
+
+    # ── Paleta ────────────────────────────────────────────
+    NAVY   = colors.HexColor("#1E2761")
+    TEAL   = colors.HexColor("#028090")
+    ACCENT = colors.HexColor("#02C39A")
+    AMBER  = colors.HexColor("#F59E0B")
+    CORAL  = colors.HexColor("#EF4444")
+    LGRAY  = colors.HexColor("#F0F4FF")
+    GRAY   = colors.HexColor("#64748B")
+    WHITE  = colors.white
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=1.8*cm, rightMargin=1.8*cm,
+        topMargin=1.5*cm, bottomMargin=1.5*cm,
+    )
+    W = A4[0] - 3.6*cm  # largura útil
+
+    # ── Estilos ───────────────────────────────────────────
+    styles = getSampleStyleSheet()
+    sTitle    = ParagraphStyle("sTitle",    fontSize=20, textColor=WHITE,     alignment=TA_LEFT,   fontName="Helvetica-Bold", leading=26)
+    sSub      = ParagraphStyle("sSub",      fontSize=10, textColor=ACCENT,    alignment=TA_LEFT,   fontName="Helvetica")
+    sDate     = ParagraphStyle("sDate",     fontSize=8,  textColor=WHITE,     alignment=TA_RIGHT,  fontName="Helvetica")
+    sH2       = ParagraphStyle("sH2",       fontSize=12, textColor=NAVY,      fontName="Helvetica-Bold", spaceBefore=14, spaceAfter=4)
+    sH3       = ParagraphStyle("sH3",       fontSize=10, textColor=TEAL,      fontName="Helvetica-Bold", spaceBefore=8,  spaceAfter=2)
+    sNormal   = ParagraphStyle("sNormal",   fontSize=8,  textColor=GRAY,      fontName="Helvetica", leading=12)
+    sAlert    = ParagraphStyle("sAlert",    fontSize=8,  textColor=CORAL,     fontName="Helvetica-Bold")
+    sOk       = ParagraphStyle("sOk",       fontSize=8,  textColor=ACCENT,    fontName="Helvetica-Bold")
+    sMetricV  = ParagraphStyle("sMetricV",  fontSize=18, textColor=NAVY,      fontName="Helvetica-Bold", alignment=TA_CENTER)
+    sMetricL  = ParagraphStyle("sMetricL",  fontSize=7,  textColor=GRAY,      fontName="Helvetica",      alignment=TA_CENTER)
+    sTH       = ParagraphStyle("sTH",       fontSize=7,  textColor=WHITE,     fontName="Helvetica-Bold", alignment=TA_CENTER)
+    sTD       = ParagraphStyle("sTD",       fontSize=7,  textColor=GRAY,      fontName="Helvetica",      alignment=TA_CENTER)
+    sTDL      = ParagraphStyle("sTDL",      fontSize=7,  textColor=GRAY,      fontName="Helvetica",      alignment=TA_LEFT)
+
+    story = []
+
+    # ── Helper: gráfico plotly → imagem ──────────────────
+    def fig_to_image(fig, width_cm=16, height_cm=7):
+        fig.update_layout(
+            paper_bgcolor="white", plot_bgcolor="#F8FAFC",
+            font=dict(family="Helvetica", size=9, color="#1E2761"),
+            margin=dict(t=30, b=30, l=40, r=20),
+        )
+        img_bytes = pio.to_image(fig, format="png", width=int(width_cm*37.8), height=int(height_cm*37.8), scale=2)
+        return RLImage(_io.BytesIO(img_bytes), width=width_cm*cm, height=height_cm*cm)
+
+    # ── Helper: tabela estilizada ─────────────────────────
+    def make_table(df, col_widths=None, max_rows=20):
+        if df is None or df.empty:
+            return Paragraph("Sem dados disponíveis.", sNormal)
+        df_show = df.head(max_rows).copy()
+        # Formata floats
+        for c in df_show.select_dtypes(include="float").columns:
+            df_show[c] = df_show[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+        headers = [Paragraph(str(c), sTH) for c in df_show.columns]
+        rows = [[Paragraph(str(v), sTDL if i == 0 else sTD) for i, v in enumerate(row)] for row in df_show.itertuples(index=False)]
+        data = [headers] + rows
+        if col_widths is None:
+            col_widths = [W / len(df_show.columns)] * len(df_show.columns)
+        ts = TableStyle([
+            ("BACKGROUND",  (0, 0), (-1, 0),  NAVY),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LGRAY, WHITE]),
+            ("GRID",        (0, 0), (-1, -1),  0.3, colors.HexColor("#D0DAFF")),
+            ("TOPPADDING",  (0, 0), (-1, -1),  3),
+            ("BOTTOMPADDING",(0,0), (-1, -1),  3),
+            ("LEFTPADDING", (0, 0), (-1, -1),  4),
+            ("RIGHTPADDING",(0, 0), (-1, -1),  4),
+            ("VALIGN",      (0, 0), (-1, -1),  "MIDDLE"),
+        ])
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(ts)
+        return t
+
+    # ══════════════════════════════════════════════════════
+    # CAPA
+    # ══════════════════════════════════════════════════════
+    # Faixa de cabeçalho
+    header_data = [[
+        Paragraph("Relatório de Alocação de Veículos por Cluster", sTitle),
+        Paragraph(datetime.now().strftime("%d/%m/%Y %H:%M"), sDate),
+    ]]
+    header_table = Table(header_data, colWidths=[W * 0.75, W * 0.25])
+    header_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING",   (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 8),
+        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(header_table)
+
+    # Subtítulo
+    sub_data = [[Paragraph("Plano de Rotas × ISs do Dia — alocação automática por cluster e HUB", sSub)]]
+    sub_table = Table(sub_data, colWidths=[W])
+    sub_table.setStyle(TableStyle([
+        ("BACKGROUND",   (0, 0), (-1, -1), TEAL),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 14),
+        ("TOPPADDING",   (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
+    ]))
+    story.append(sub_table)
+    story.append(Spacer(1, 0.4*cm))
+
+    # ══════════════════════════════════════════════════════
+    # MÉTRICAS EXECUTIVAS
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Resumo Executivo", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=TEAL, spaceAfter=6))
+
+    resumo_frota = analyses.get("Resumo_Frota", pd.DataFrame())
+    faltas_df    = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
+    sinergia_df  = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
+
+    total_oferta   = int(resumo_frota["Oferta"].sum())  if not resumo_frota.empty and "Oferta"  in resumo_frota.columns else 0
+    total_usado    = int(resumo_frota["Usado"].sum())   if not resumo_frota.empty and "Usado"   in resumo_frota.columns else 0
+    total_saldo    = int(resumo_frota["Saldo"].sum())   if not resumo_frota.empty and "Saldo"   in resumo_frota.columns else 0
+    n_faltas       = len(faltas_df) if not faltas_df.empty else 0
+    n_sinergia     = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
+    util_pct       = f"{total_usado/total_oferta*100:.1f}%" if total_oferta > 0 else "—"
+    n_clusters     = output_final["Cluster"].nunique() if not output_final.empty else 0
+    n_hubs         = output_final["HUB"].nunique()     if not output_final.empty else 0
+
+    metrics = [
+        (str(total_alocado := total_usado), "Veículos alocados"),
+        (util_pct,                          "Utilização geral"),
+        (str(total_oferta),                 "Oferta total"),
+        (str(total_saldo),                  "Saldo restante"),
+        (str(n_clusters),                   "Clusters atendidos"),
+        (str(n_hubs),                       "HUBs envolvidos"),
+        (str(n_sinergia),                   "Veículos em sinergia"),
+        (str(n_faltas),                     "Clusters com falta"),
+    ]
+    metric_cells = []
+    for val, label in metrics:
+        cell = Table(
+            [[Paragraph(val, sMetricV)], [Paragraph(label, sMetricL)]],
+            colWidths=[W/8]
+        )
+        cell.setStyle(TableStyle([
+            ("BACKGROUND",   (0, 0), (-1, -1), LGRAY),
+            ("TOPPADDING",   (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 6),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("BOX",          (0, 0), (-1, -1), 1, colors.HexColor("#D0DAFF")),
+        ]))
+        metric_cells.append(cell)
+
+    metrics_row = Table([metric_cells], colWidths=[W/8]*8)
+    metrics_row.setStyle(TableStyle([("LEFTPADDING",(0,0),(-1,-1),2), ("RIGHTPADDING",(0,0),(-1,-1),2)]))
+    story.append(metrics_row)
+    story.append(Spacer(1, 0.3*cm))
+
+    # Config usada
+    config_text = f"Configuração: Ocupação m³ = {occupancy_m3:.0%} | Ocupação kg = {occupancy_kg:.0%} | MIN_MEDIO oversize ≥ {MIN_MEDIO_OVERSIZE_M3} m³ ou ≥ {MIN_MEDIO_OVERSIZE_KG} kg"
+    story.append(Paragraph(config_text, sNormal))
+
+    # Alerta de faltas
+    if n_faltas > 0:
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph(f"⚠ ATENÇÃO: {n_faltas} cluster(s) com falta de oferta — verifique a aba Diagnóstico.", sAlert))
+    else:
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph("✓ Todos os clusters foram atendidos sem falta de oferta.", sOk))
+
+    story.append(Spacer(1, 0.4*cm))
+
+    # ══════════════════════════════════════════════════════
+    # GRÁFICO 1 — Veículos alocados por HUB
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Distribuição por HUB", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=TEAL, spaceAfter=6))
+
+    uso_hub = analyses.get("Uso_HUB_Frota", pd.DataFrame())
+    if not uso_hub.empty:
+        hub_tot = uso_hub.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=False)
+        fig_hub = px.bar(
+            hub_tot, x="HUB", y="Veiculos", text="Veiculos",
+            color="Veiculos", color_continuous_scale=["#028090", "#02C39A"],
+            title="Veículos alocados por HUB",
+        )
+        fig_hub.update_traces(textposition="outside")
+        fig_hub.update_coloraxes(showscale=False)
+        story.append(fig_to_image(fig_hub, width_cm=16, height_cm=7))
+        story.append(Spacer(1, 0.2*cm))
+
+        # Top 3 HUBs
+        story.append(Paragraph("Top HUBs por volume alocado:", sH3))
+        top3 = hub_tot.head(3)
+        for _, row in top3.iterrows():
+            pct = row["Veiculos"] / hub_tot["Veiculos"].sum() * 100
+            story.append(Paragraph(f"  • <b>{row['HUB']}</b> — {int(row['Veiculos'])} veículos ({pct:.1f}% do total)", sNormal))
+        story.append(Spacer(1, 0.3*cm))
+
+    # ══════════════════════════════════════════════════════
+    # GRÁFICO 2 — Utilização por Tipo de Frota
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Utilização por Tipo de Frota", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=TEAL, spaceAfter=6))
+
+    if not resumo_frota.empty and "Oferta" in resumo_frota.columns:
+        df_melt = resumo_frota[["Tipo Frota", "Oferta", "Usado"]].melt(
+            id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd"
+        )
+        fig_frota = px.bar(
+            df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group",
+            text="Qtd", title="Oferta vs Utilizado por Tipo de Frota",
+            color_discrete_map={"Oferta": "#2E4DA3", "Usado": "#02C39A"},
+        )
+        fig_frota.update_traces(textposition="outside")
+        story.append(fig_to_image(fig_frota, width_cm=16, height_cm=7))
+        story.append(Spacer(1, 0.2*cm))
+
+        # Tabela resumo frota
+        story.append(Paragraph("Resumo por Tipo de Frota", sH3))
+        cols_frota = ["Tipo Frota", "Oferta", "Usado", "Saldo", "Utilizacao_%"]
+        df_frota_show = resumo_frota[[c for c in cols_frota if c in resumo_frota.columns]].copy()
+        if "Utilizacao_%" in df_frota_show.columns:
+            df_frota_show["Utilizacao_%"] = (df_frota_show["Utilizacao_%"] * 100).round(1).astype(str) + "%"
+        cw_frota = [W*0.3, W*0.17, W*0.17, W*0.17, W*0.19][:len(df_frota_show.columns)]
+        story.append(make_table(df_frota_show, col_widths=cw_frota))
+        story.append(Spacer(1, 0.3*cm))
+
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════
+    # GRÁFICO 3 — Distribuição por Classe de Veículo
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Distribuição por Classe de Veículo", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=TEAL, spaceAfter=6))
+
+    resumo_cls = analyses.get("Resumo_Classe", pd.DataFrame())
+    if not resumo_cls.empty and "Usado" in resumo_cls.columns:
+        cls_tot = resumo_cls.groupby("vehicle_class", as_index=False)["Usado"].sum()
+        cls_tot = cls_tot[cls_tot["Usado"] > 0].sort_values("Usado", ascending=False)
+
+        g1, g2 = cls_tot.copy(), cls_tot.copy()
+        fig_cls_bar = px.bar(
+            g1, x="vehicle_class", y="Usado", text="Usado",
+            color="vehicle_class", title="Veículos por classe",
+            color_discrete_sequence=px.colors.qualitative.Safe,
+        )
+        fig_cls_bar.update_traces(textposition="outside", showlegend=False)
+        story.append(fig_to_image(fig_cls_bar, width_cm=16, height_cm=6.5))
+        story.append(Spacer(1, 0.3*cm))
+
+    # ══════════════════════════════════════════════════════
+    # TABELA — Distribuição por Transportadora
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Distribuição por Transportadora", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=TEAL, spaceAfter=6))
+
+    dist_car = analyses.get("Distribuicao_Transportadora", pd.DataFrame())
+    if not dist_car.empty:
+        cols_car = ["Transportadora", "Tipo Frota", "Oferta", "Usado", "Saldo", "Oferta_%", "Uso_%", "Delta_pp"]
+        df_car_show = dist_car[[c for c in cols_car if c in dist_car.columns]].copy()
+        for c in ["Oferta_%", "Uso_%"]:
+            if c in df_car_show.columns:
+                df_car_show[c] = (df_car_show[c] * 100).round(1).astype(str) + "%"
+        if "Delta_pp" in df_car_show.columns:
+            df_car_show["Delta_pp"] = df_car_show["Delta_pp"].round(1).astype(str) + "pp"
+        n_cols = len(df_car_show.columns)
+        cw = [W / n_cols] * n_cols
+        cw[0] = W * 0.22
+        story.append(make_table(df_car_show, col_widths=cw, max_rows=30))
+        story.append(Spacer(1, 0.3*cm))
+
+    # ══════════════════════════════════════════════════════
+    # TABELA — Sinergia entre Clusters
+    # ══════════════════════════════════════════════════════
+    if not sinergia_df.empty:
+        story.append(Paragraph("Sinergia — Empréstimos entre Clusters", sH2))
+        story.append(HRFlowable(width=W, thickness=2, color=AMBER, spaceAfter=6))
+        story.append(Paragraph("Veículos alocados de clusters vizinhos (mesmo grupo de sinergia):", sNormal))
+        story.append(Spacer(1, 0.15*cm))
+        cols_sin = ["Grupo_Sinergia", "Cluster", "Cluster_Oferta", "Tipo Frota", "vehicle_class", "Veiculos"]
+        df_sin = sinergia_df[[c for c in cols_sin if c in sinergia_df.columns]]
+        cw_sin = [W*0.18, W*0.16, W*0.18, W*0.14, W*0.14, W*0.14][:len(df_sin.columns)]
+        story.append(make_table(df_sin, col_widths=cw_sin, max_rows=25))
+        story.append(Spacer(1, 0.3*cm))
+
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════
+    # TABELA — Diagnóstico de Faltas
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Diagnóstico de Faltas de Oferta", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=CORAL, spaceAfter=6))
+
+    if n_faltas == 0:
+        story.append(Paragraph("✓ Nenhum cluster com falta de oferta nesta rodada.", sOk))
+    else:
+        story.append(Paragraph(f"Os {n_faltas} cluster(s) abaixo tiveram demanda superior à oferta disponível:", sAlert))
+        story.append(Spacer(1, 0.15*cm))
+        cols_falt = ["Cluster", "Demanda_m3", "Demanda_kg", "Capacidade_Aloc_m3", "Capacidade_Aloc_kg", "Veiculos_SemOferta", "Gap_m3", "Gap_kg"]
+        df_falt = faltas_df[[c for c in cols_falt if c in faltas_df.columns]]
+        cw_falt = [W*0.18] + [W*0.82/(len(df_falt.columns)-1)]*(len(df_falt.columns)-1)
+        story.append(make_table(df_falt, col_widths=cw_falt))
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph("Gap positivo indica que a capacidade alocada foi insuficiente para cobrir a demanda.", sNormal))
+
+    story.append(Spacer(1, 0.4*cm))
+
+    # ══════════════════════════════════════════════════════
+    # TABELA — Output Consolidado (primeiras 40 linhas)
+    # ══════════════════════════════════════════════════════
+    story.append(Paragraph("Output Consolidado (primeiras 40 linhas)", sH2))
+    story.append(HRFlowable(width=W, thickness=2, color=TEAL, spaceAfter=6))
+    story.append(Paragraph("Para o output completo, utilize o download em Excel ou CSV.", sNormal))
+    story.append(Spacer(1, 0.15*cm))
+
+    if not output_final.empty:
+        cols_out = ["Cluster", "HUB", "Transportadora", "Tipo Frota", "Modal", "Veiculos"]
+        df_out = output_final[[c for c in cols_out if c in output_final.columns]]
+        cw_out = [W*0.16, W*0.10, W*0.22, W*0.14, W*0.26, W*0.12][:len(df_out.columns)]
+        story.append(make_table(df_out, col_widths=cw_out, max_rows=40))
+
+    # ══════════════════════════════════════════════════════
+    # RODAPÉ
+    # ══════════════════════════════════════════════════════
+    story.append(Spacer(1, 0.5*cm))
+    story.append(HRFlowable(width=W, thickness=1, color=TEAL, spaceAfter=4))
+    footer_data = [[
+        Paragraph("Gerado automaticamente pelo App de Alocação de Veículos por Cluster", sNormal),
+        Paragraph(datetime.now().strftime("Gerado em %d/%m/%Y às %H:%M"), ParagraphStyle("r", fontSize=7, textColor=GRAY, alignment=TA_RIGHT, fontName="Helvetica")),
+    ]]
+    footer_table = Table(footer_data, colWidths=[W*0.65, W*0.35])
+    footer_table.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "MIDDLE")]))
+    story.append(footer_table)
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
+
+# =========================
 # STREAMLIT UI
 # =========================
 st.set_page_config(page_title="Alocação por Cluster", layout="wide", page_icon="🚛")
@@ -1319,6 +1681,15 @@ if run:
             saldo_final=saldo_plano,
         )
         analyses.update(demand_checks)
+        progress.progress(90, text="Gerando relatório PDF...")
+        pdf_bytes = generate_pdf_report(
+            output_final=output_consolidado,
+            saldo_final=saldo_plano,
+            analyses=analyses,
+            isdata=isdata_norm,
+            occupancy_m3=occupancy_m3,
+            occupancy_kg=occupancy_kg,
+        )
         progress.progress(100, text="Concluído!")
         progress.empty()
 
@@ -1363,17 +1734,25 @@ if run:
         excel_bytes = to_excel_bytes_multi(sheets)
 
         st.markdown("#### ⬇️ Downloads")
-        dl1, dl2, dl3 = st.columns(3)
+        dl1, dl2, dl3, dl4 = st.columns(4)
         with dl1:
+            st.download_button(
+                "📑 Relatório PDF",
+                data=pdf_bytes,
+                file_name="relatorio_alocacao.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+        with dl2:
             st.download_button(
                 "📥 Excel completo (todas as abas)",
                 data=excel_bytes,
                 file_name="output_alocacao_por_cluster.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                type="primary",
             )
-        with dl2:
+        with dl3:
             st.download_button(
                 "📄 Output consolidado (CSV)",
                 data=to_csv_bytes(output_consolidado),
@@ -1381,7 +1760,7 @@ if run:
                 mime="text/csv",
                 use_container_width=True,
             )
-        with dl3:
+        with dl4:
             st.download_button(
                 "📄 Saldo do plano (CSV)",
                 data=to_csv_bytes(saldo_plano),
