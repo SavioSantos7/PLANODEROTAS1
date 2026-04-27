@@ -1291,11 +1291,6 @@ run = st.button("Rodar alocação", type="primary", disabled=not (plan_file and 
 
 if run:
     try:
-        progress = st.progress(0, text="Lendo arquivos...")
-        plan_df = load_excel(plan_file)
-        is_df = load_excel(is_file)
-        progress.progress(20, text="Processando alocação...")
-
         # Aplica ocupação dos sliders sobrescrevendo as constantes globais
         global OCCUPANCY_M3, OCCUPANCY_KG, VUC_BASE_M3_EFF, VUC_BASE_KG_EFF, MEDIO_BASE_M3_EFF, MEDIO_BASE_KG_EFF
         OCCUPANCY_M3 = occupancy_m3
@@ -1304,6 +1299,11 @@ if run:
         VUC_BASE_KG_EFF = 1800 * OCCUPANCY_KG
         MEDIO_BASE_M3_EFF = 37 * OCCUPANCY_M3
         MEDIO_BASE_KG_EFF = 3500 * OCCUPANCY_KG
+
+        progress = st.progress(0, text="Lendo arquivos...")
+        plan_df = load_excel(plan_file)
+        is_df = load_excel(is_file)
+        progress.progress(20, text="Processando alocação...")
 
         output_consolidado, saldo_plano, debug_alloc, saldo_debug, plan_common, isdata_norm = run_allocation(
             plan_df, is_df, enable_synergy=enable_synergy, return_debug=True
