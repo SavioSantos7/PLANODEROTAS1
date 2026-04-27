@@ -1760,222 +1760,220 @@ if st.session_state.resultado is not None:
     occupancy_m3       = r["occupancy_m3"]
     occupancy_kg       = r["occupancy_kg"]
 
-    if run:
-        st.success("✅ Processamento concluído!")
-    else:
+    if not run:
         st.info("ℹ️ Exibindo resultado da última alocação. Suba novos arquivos e clique em **Rodar alocação** para atualizar.")
 
-        # =========================
-        # MÉTRICAS EXECUTIVAS
-        # =========================
-        faltas_df = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
-        sinergia_df = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
-        resumo_frota_df = analyses.get("Resumo_Frota", pd.DataFrame())
+    # =========================
+    # MÉTRICAS EXECUTIVAS
+    # =========================
+    faltas_df = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
+    sinergia_df = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
+    resumo_frota_df = analyses.get("Resumo_Frota", pd.DataFrame())
 
-        n_faltas = len(faltas_df) if not faltas_df.empty else 0
-        n_sinergia = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
-        util_geral = 0.0
-        total_alocados = 0
-        if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
-            total_oferta = resumo_frota_df["Oferta"].sum()
-            total_usado = resumo_frota_df["Usado"].sum() if "Usado" in resumo_frota_df.columns else 0
-            total_alocados = int(total_usado)
-            util_geral = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
+    n_faltas = len(faltas_df) if not faltas_df.empty else 0
+    n_sinergia = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
+    util_geral = 0.0
+    total_alocados = 0
+    if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+        total_oferta = resumo_frota_df["Oferta"].sum()
+        total_usado = resumo_frota_df["Usado"].sum() if "Usado" in resumo_frota_df.columns else 0
+        total_alocados = int(total_usado)
+        util_geral = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
 
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("🚛 Veículos alocados", total_alocados)
-        with m2:
-            st.metric("📊 Utilização geral", f"{util_geral:.1f}%")
-        with m3:
-            st.metric("🔄 Em sinergia", n_sinergia)
-        with m4:
-            if n_faltas > 0:
-                st.metric("⚠️ Clusters com falta", n_faltas)
-            else:
-                st.metric("✅ Clusters com falta", 0)
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("🚛 Veículos alocados", total_alocados)
+    with m2:
+        st.metric("📊 Utilização geral", f"{util_geral:.1f}%")
+    with m3:
+        st.metric("🔄 Em sinergia", n_sinergia)
+    with m4:
+        if n_faltas > 0:
+            st.metric("⚠️ Clusters com falta", n_faltas)
+        else:
+            st.metric("✅ Clusters com falta", 0)
 
-        st.divider()
+    st.divider()
 
-        # =========================
-        # DOWNLOADS NO TOPO
-        # =========================
-        sheets = {"output_consolidado": output_consolidado, "saldo_plano": saldo_plano, **analyses}
-        excel_bytes = to_excel_bytes_multi(sheets)
+    # =========================
+    # DOWNLOADS NO TOPO
+    # =========================
+    sheets = {"output_consolidado": output_consolidado, "saldo_plano": saldo_plano, **analyses}
+    excel_bytes = to_excel_bytes_multi(sheets)
 
-        st.markdown("#### ⬇️ Downloads")
-        dl1, dl2, dl3, dl4 = st.columns(4)
-        with dl1:
-            st.download_button(
-                "📑 Relatório PDF",
-                data=pdf_bytes,
-                file_name="relatorio_alocacao.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                type="primary",
-            )
-        with dl2:
-            st.download_button(
-                "📥 Excel completo (todas as abas)",
-                data=excel_bytes,
-                file_name="output_alocacao_por_cluster.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        with dl3:
-            st.download_button(
-                "📄 Output consolidado (CSV)",
-                data=to_csv_bytes(output_consolidado),
-                file_name="output_consolidado.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        with dl4:
-            st.download_button(
-                "📄 Saldo do plano (CSV)",
-                data=to_csv_bytes(saldo_plano),
-                file_name="saldo_plano.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+    st.markdown("#### ⬇️ Downloads")
+    dl1, dl2, dl3, dl4 = st.columns(4)
+    with dl1:
+        st.download_button(
+            "📑 Relatório PDF",
+            data=pdf_bytes,
+            file_name="relatorio_alocacao.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary",
+        )
+    with dl2:
+        st.download_button(
+            "📥 Excel completo (todas as abas)",
+            data=excel_bytes,
+            file_name="output_alocacao_por_cluster.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    with dl3:
+        st.download_button(
+            "📄 Output consolidado (CSV)",
+            data=to_csv_bytes(output_consolidado),
+            file_name="output_consolidado.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with dl4:
+        st.download_button(
+            "📄 Saldo do plano (CSV)",
+            data=to_csv_bytes(saldo_plano),
+            file_name="saldo_plano.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
-        st.divider()
+    st.divider()
 
-        # =========================
-        # ABAS PRINCIPAIS
-        # =========================
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "📋 Resultado",
-            "📈 Gráficos",
-            "📊 Análises detalhadas",
-            "⚠️ Diagnóstico de faltas",
-        ])
+    # =========================
+    # ABAS PRINCIPAIS
+    # =========================
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Resultado",
+        "📈 Gráficos",
+        "📊 Análises detalhadas",
+        "⚠️ Diagnóstico de faltas",
+    ])
 
-        # ── ABA 1: RESULTADO ──────────────────────────────
-        with tab1:
-            st.markdown("##### Filtros")
-            all_clusters = sorted(output_consolidado["Cluster"].astype(str).unique().tolist()) if not output_consolidado.empty else []
-            all_hubs     = sorted(output_consolidado["HUB"].astype(str).unique().tolist()) if not output_consolidado.empty else []
-            all_frotas   = sorted(output_consolidado["Tipo Frota"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+    # ── ABA 1: RESULTADO ──────────────────────────────
+    with tab1:
+        st.markdown("##### Filtros")
+        all_clusters = sorted(output_consolidado["Cluster"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+        all_hubs     = sorted(output_consolidado["HUB"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+        all_frotas   = sorted(output_consolidado["Tipo Frota"].astype(str).unique().tolist()) if not output_consolidado.empty else []
 
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                sel_clusters = st.multiselect("Cluster", all_clusters, placeholder="Todos")
-            with fc2:
-                sel_hubs = st.multiselect("HUB", all_hubs, placeholder="Todos")
-            with fc3:
-                sel_frotas = st.multiselect("Tipo Frota", all_frotas, placeholder="Todas")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            sel_clusters = st.multiselect("Cluster", all_clusters, placeholder="Todos")
+        with fc2:
+            sel_hubs = st.multiselect("HUB", all_hubs, placeholder="Todos")
+        with fc3:
+            sel_frotas = st.multiselect("Tipo Frota", all_frotas, placeholder="Todas")
 
-            out_filtrado = output_consolidado.copy() if not output_consolidado.empty else output_consolidado
-            if sel_clusters:
-                out_filtrado = out_filtrado[out_filtrado["Cluster"].astype(str).isin(sel_clusters)]
-            if sel_hubs:
-                out_filtrado = out_filtrado[out_filtrado["HUB"].astype(str).isin(sel_hubs)]
-            if sel_frotas:
-                out_filtrado = out_filtrado[out_filtrado["Tipo Frota"].astype(str).isin(sel_frotas)]
+        out_filtrado = output_consolidado.copy() if not output_consolidado.empty else output_consolidado
+        if sel_clusters:
+            out_filtrado = out_filtrado[out_filtrado["Cluster"].astype(str).isin(sel_clusters)]
+        if sel_hubs:
+            out_filtrado = out_filtrado[out_filtrado["HUB"].astype(str).isin(sel_hubs)]
+        if sel_frotas:
+            out_filtrado = out_filtrado[out_filtrado["Tipo Frota"].astype(str).isin(sel_frotas)]
 
-            r1, r2 = st.columns(2)
-            with r1:
-                label = "Output consolidado" + (" (filtrado)" if any([sel_clusters, sel_hubs, sel_frotas]) else "")
-                st.markdown(f"##### {label}")
-                st.dataframe(out_filtrado, use_container_width=True, hide_index=True, height=420)
-            with r2:
-                st.markdown("##### Saldo do plano (disponibilidade restante ≥ 1)")
-                st.dataframe(saldo_plano, use_container_width=True, hide_index=True, height=420)
+        r1, r2 = st.columns(2)
+        with r1:
+            label = "Output consolidado" + (" (filtrado)" if any([sel_clusters, sel_hubs, sel_frotas]) else "")
+            st.markdown(f"##### {label}")
+            st.dataframe(out_filtrado, use_container_width=True, hide_index=True, height=420)
+        with r2:
+            st.markdown("##### Saldo do plano (disponibilidade restante ≥ 1)")
+            st.dataframe(saldo_plano, use_container_width=True, hide_index=True, height=420)
 
-        # ── ABA 2: GRÁFICOS ───────────────────────────────
-        with tab2:
-            g1, g2 = st.columns(2)
-            with g1:
-                st.markdown("**Oferta vs Usado por Tipo Frota**")
-                if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
-                    df_melt = resumo_frota_df[["Tipo Frota", "Oferta", "Usado"]].melt(
-                        id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd"
-                    )
-                    fig = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group",
-                                 color_discrete_map={"Oferta": "#378ADD", "Usado": "#1D9E75"})
-                    fig.update_layout(margin=dict(t=10, b=10), height=320, legend_title_text="")
-                    st.plotly_chart(fig, use_container_width=True)
+    # ── ABA 2: GRÁFICOS ───────────────────────────────
+    with tab2:
+        g1, g2 = st.columns(2)
+        with g1:
+            st.markdown("**Oferta vs Usado por Tipo Frota**")
+            if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+                df_melt = resumo_frota_df[["Tipo Frota", "Oferta", "Usado"]].melt(
+                    id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd"
+                )
+                fig = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group",
+                             color_discrete_map={"Oferta": "#378ADD", "Usado": "#1D9E75"})
+                fig.update_layout(margin=dict(t=10, b=10), height=320, legend_title_text="")
+                st.plotly_chart(fig, use_container_width=True)
 
-            with g2:
-                st.markdown("**Utilização % por Tipo Frota**")
-                if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
-                    fig2 = px.bar(resumo_frota_df, x="Tipo Frota", y="Utilizacao_%",
-                                  color="Utilizacao_%",
-                                  color_continuous_scale=["#E24B4A", "#EF9F27", "#1D9E75"],
-                                  range_color=[0, 1])
-                    fig2.update_layout(margin=dict(t=10, b=10), height=320, showlegend=False)
-                    fig2.update_traces(texttemplate="%{y:.0%}", textposition="outside")
-                    st.plotly_chart(fig2, use_container_width=True)
+        with g2:
+            st.markdown("**Utilização % por Tipo Frota**")
+            if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
+                fig2 = px.bar(resumo_frota_df, x="Tipo Frota", y="Utilizacao_%",
+                              color="Utilizacao_%",
+                              color_continuous_scale=["#E24B4A", "#EF9F27", "#1D9E75"],
+                              range_color=[0, 1])
+                fig2.update_layout(margin=dict(t=10, b=10), height=320, showlegend=False)
+                fig2.update_traces(texttemplate="%{y:.0%}", textposition="outside")
+                st.plotly_chart(fig2, use_container_width=True)
 
-            g3, g4 = st.columns(2)
-            with g3:
-                st.markdown("**Veículos alocados por HUB**")
-                uso_hub = analyses.get("Uso_HUB_Frota", pd.DataFrame())
-                if not uso_hub.empty:
-                    hub_tot = uso_hub.groupby("HUB", as_index=False)["Veiculos"].sum()
-                    fig3 = px.bar(hub_tot, x="HUB", y="Veiculos", color_discrete_sequence=["#534AB7"])
-                    fig3.update_layout(margin=dict(t=10, b=10), height=300)
-                    st.plotly_chart(fig3, use_container_width=True)
+        g3, g4 = st.columns(2)
+        with g3:
+            st.markdown("**Veículos alocados por HUB**")
+            uso_hub = analyses.get("Uso_HUB_Frota", pd.DataFrame())
+            if not uso_hub.empty:
+                hub_tot = uso_hub.groupby("HUB", as_index=False)["Veiculos"].sum()
+                fig3 = px.bar(hub_tot, x="HUB", y="Veiculos", color_discrete_sequence=["#534AB7"])
+                fig3.update_layout(margin=dict(t=10, b=10), height=300)
+                st.plotly_chart(fig3, use_container_width=True)
 
-            with g4:
-                st.markdown("**Distribuição por Classe de Veículo**")
-                resumo_cls_df = analyses.get("Resumo_Classe", pd.DataFrame())
-                if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
-                    cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
-                    cls_tot = cls_tot[cls_tot["Usado"] > 0]
-                    fig4 = px.pie(cls_tot, names="vehicle_class", values="Usado",
-                                  color_discrete_sequence=px.colors.qualitative.Safe)
-                    fig4.update_layout(margin=dict(t=10, b=10), height=300)
-                    st.plotly_chart(fig4, use_container_width=True)
+        with g4:
+            st.markdown("**Distribuição por Classe de Veículo**")
+            resumo_cls_df = analyses.get("Resumo_Classe", pd.DataFrame())
+            if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
+                cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
+                cls_tot = cls_tot[cls_tot["Usado"] > 0]
+                fig4 = px.pie(cls_tot, names="vehicle_class", values="Usado",
+                              color_discrete_sequence=px.colors.qualitative.Safe)
+                fig4.update_layout(margin=dict(t=10, b=10), height=300)
+                st.plotly_chart(fig4, use_container_width=True)
 
-        # ── ABA 3: ANÁLISES DETALHADAS ────────────────────
-        with tab3:
-            st.markdown("##### Resumo por Tipo de Frota")
-            st.dataframe(analyses.get("Resumo_Frota"), use_container_width=True, hide_index=True)
+    # ── ABA 3: ANÁLISES DETALHADAS ────────────────────
+    with tab3:
+        st.markdown("##### Resumo por Tipo de Frota")
+        st.dataframe(analyses.get("Resumo_Frota"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Resumo por Classe de Veículo")
-            st.dataframe(analyses.get("Resumo_Classe"), use_container_width=True, hide_index=True)
+        st.markdown("##### Resumo por Classe de Veículo")
+        st.dataframe(analyses.get("Resumo_Classe"), use_container_width=True, hide_index=True)
 
-            cA, cB = st.columns(2)
-            with cA:
-                st.markdown("##### Uso por Cluster × Tipo Frota")
-                st.dataframe(analyses.get("Uso_Cluster_Frota"), use_container_width=True, hide_index=True)
-            with cB:
-                st.markdown("##### Uso por HUB × Tipo Frota")
-                st.dataframe(analyses.get("Uso_HUB_Frota"), use_container_width=True, hide_index=True)
+        cA, cB = st.columns(2)
+        with cA:
+            st.markdown("##### Uso por Cluster × Tipo Frota")
+            st.dataframe(analyses.get("Uso_Cluster_Frota"), use_container_width=True, hide_index=True)
+        with cB:
+            st.markdown("##### Uso por HUB × Tipo Frota")
+            st.dataframe(analyses.get("Uso_HUB_Frota"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Distribuição por Transportadora")
-            st.dataframe(analyses.get("Distribuicao_Transportadora"), use_container_width=True, hide_index=True)
+        st.markdown("##### Distribuição por Transportadora")
+        st.dataframe(analyses.get("Distribuicao_Transportadora"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Uso por Cluster × Transportadora")
-            st.dataframe(analyses.get("Uso_Cluster_Transportadora"), use_container_width=True, hide_index=True)
+        st.markdown("##### Uso por Cluster × Transportadora")
+        st.dataframe(analyses.get("Uso_Cluster_Transportadora"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Sinergia — empréstimos entre clusters")
-            st.dataframe(analyses.get("Sinergia_Emprestimos"), use_container_width=True, hide_index=True)
+        st.markdown("##### Sinergia — empréstimos entre clusters")
+        st.dataframe(analyses.get("Sinergia_Emprestimos"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Proporcionalidade por bucket")
-            st.dataframe(analyses.get("Proporcionalidade_Bucket"), use_container_width=True, hide_index=True)
+        st.markdown("##### Proporcionalidade por bucket")
+        st.dataframe(analyses.get("Proporcionalidade_Bucket"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Demanda × Capacidade Alocada × Plano — por Cluster")
-            st.dataframe(analyses.get("Demanda_vs_Capacidade_Cluster"), use_container_width=True, hide_index=True)
+        st.markdown("##### Demanda × Capacidade Alocada × Plano — por Cluster")
+        st.dataframe(analyses.get("Demanda_vs_Capacidade_Cluster"), use_container_width=True, hide_index=True)
 
-            st.markdown("##### Demanda × Capacidade Alocada — por HUB")
-            st.dataframe(analyses.get("Demanda_vs_Capacidade_HUB"), use_container_width=True, hide_index=True)
+        st.markdown("##### Demanda × Capacidade Alocada — por HUB")
+        st.dataframe(analyses.get("Demanda_vs_Capacidade_HUB"), use_container_width=True, hide_index=True)
 
-        # ── ABA 4: DIAGNÓSTICO DE FALTAS ──────────────────
-        with tab4:
-            if n_faltas == 0:
-                st.success("✅ Nenhum cluster com falta de oferta nesta rodada.")
-            else:
-                st.error(f"⚠️ {n_faltas} cluster(s) com indicativo de falta de oferta ou gap de capacidade.")
-                st.dataframe(analyses.get("Faltas_Resumo_Cluster"), use_container_width=True, hide_index=True)
-                st.markdown("""
+    # ── ABA 4: DIAGNÓSTICO DE FALTAS ──────────────────
+    with tab4:
+        if n_faltas == 0:
+            st.success("✅ Nenhum cluster com falta de oferta nesta rodada.")
+        else:
+            st.error(f"⚠️ {n_faltas} cluster(s) com indicativo de falta de oferta ou gap de capacidade.")
+            st.dataframe(analyses.get("Faltas_Resumo_Cluster"), use_container_width=True, hide_index=True)
+            st.markdown("""
 > **O que significa cada coluna:**
 > - **Veiculos_SemOferta** — entregas registradas como `(SEM OFERTA)`, ou seja, sem veículo disponível no pool
 > - **Gap_m3 / Gap_kg** — diferença entre a demanda e a capacidade efetivamente alocada
 > - **Falta_Disponibilidade** — flag indicando que houve déficit nesse cluster
-                """)
+            """)
 
 else:
     st.info("Faça upload dos 2 arquivos na barra lateral e clique em **Rodar alocação**.")
