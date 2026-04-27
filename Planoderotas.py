@@ -1614,314 +1614,284 @@ def generate_report_png(
     occupancy_m3: float,
     occupancy_kg: float,
 ) -> bytes:
-    """Gera um PNG do dashboard de relatório usando plotly + HTML + imgkit."""
+    """Gera PNG do dashboard usando matplotlib puro — sem dependências externas."""
     import io as _io
-    import base64
-    import imgkit
     from datetime import datetime
-    import plotly.express as px
-    import plotly.io as pio
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    from matplotlib.patches import FancyBboxPatch
+    import matplotlib.patheffects as pe
+    import numpy as np
 
+    # ── Paleta ────────────────────────────────────────
+    NAVY   = "#1E2761"
+    TEAL   = "#028090"
+    ACCENT = "#02C39A"
+    BLUE   = "#2E4DA3"
+    AMBER  = "#F59E0B"
+    CORAL  = "#EF4444"
+    GREEN  = "#1D9E75"
+    PURPLE = "#534AB7"
+    LGRAY  = "#F0F4FF"
+    GRAY   = "#64748B"
+
+    # ── Dados ─────────────────────────────────────────
     resumo_frota_df = analyses.get("Resumo_Frota", pd.DataFrame())
     resumo_cls_df   = analyses.get("Resumo_Classe", pd.DataFrame())
     uso_hub_df      = analyses.get("Uso_HUB_Frota", pd.DataFrame())
     faltas_df       = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
     sinergia_df     = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
 
-    # ── Métricas ─────────────────────────────────────
     n_faltas      = len(faltas_df) if not faltas_df.empty else 0
     n_sinergia    = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
     total_oferta  = int(resumo_frota_df["Oferta"].sum())  if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns else 0
     total_usado   = int(resumo_frota_df["Usado"].sum())   if not resumo_frota_df.empty and "Usado"  in resumo_frota_df.columns else 0
+    total_saldo   = total_oferta - total_usado
     util_geral    = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
     n_clusters    = output_final["Cluster"].nunique() if not output_final.empty else 0
     n_hubs        = output_final["HUB"].nunique()     if not output_final.empty else 0
-    cor_util      = "#1D9E75" if util_geral >= 80 else ("#EF9F27" if util_geral >= 50 else "#E24B4A")
-    cor_falta     = "#E24B4A" if n_faltas > 0 else "#1D9E75"
+    cor_util      = GREEN if util_geral >= 80 else (AMBER if util_geral >= 50 else CORAL)
+    cor_falta     = CORAL if n_faltas > 0 else GREEN
 
-    # ── Helper: fig plotly → base64 PNG ──────────────
-    def fig_to_b64(fig, w=700, h=320):
-        fig.update_layout(
-            paper_bgcolor="white", plot_bgcolor="#F8FAFC",
-            font=dict(family="Arial", size=11, color="#1E2761"),
-            margin=dict(t=30, b=40, l=50, r=20),
-        )
-        img = fig.to_image(format="png", width=w, height=h, scale=2,
-                           engine="kaleido") if False else None
-        # fallback: usar orca via subprocess ou matplotlib
-        buf = _io.BytesIO()
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        return None  # será substituído abaixo
+    # ── Layout principal ──────────────────────────────
+    fig = plt.figure(figsize=(20, 28), facecolor="#F1F5F9")
+    gs = gridspec.GridSpec(
+        7, 2,
+        figure=fig,
+        hspace=0.45, wspace=0.25,
+        top=0.97, bottom=0.02,
+        left=0.04, right=0.97,
+        height_ratios=[0.7, 0.55, 3.2, 3.2, 3.2, 2.8, 2.5],
+    )
 
-    def plotly_fig_to_b64(fig, w=680, h=300):
-        """Converte fig plotly para PNG base64 via kaleido se disponível, senão matplotlib."""
-        try:
-            img_bytes = pio.to_image(fig, format="png", width=w, height=h, scale=2)
-            return base64.b64encode(img_bytes).decode()
-        except Exception:
-            return None
+    # ── Helper: fundo de card ─────────────────────────
+    def card_bg(ax, color="white", border=LGRAY):
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_facecolor(color)
+        fig.patches.append(FancyBboxPatch(
+            (ax.get_position().x0 - 0.005, ax.get_position().y0 - 0.005),
+            ax.get_position().width + 0.010,
+            ax.get_position().height + 0.010,
+            boxstyle="round,pad=0.005", linewidth=1,
+            edgecolor=border, facecolor="white",
+            transform=fig.transFigure, zorder=0,
+        ))
 
-    # ── Gráfico 1: HUB (barras horizontais) ──────────
-    img_hub_b64 = None
+    # ── FAIXA DE CABEÇALHO ────────────────────────────
+    ax_header = fig.add_subplot(gs[0, :])
+    ax_header.set_facecolor(NAVY)
+    ax_header.set_xlim(0, 1); ax_header.set_ylim(0, 1)
+    for spine in ax_header.spines.values(): spine.set_visible(False)
+    ax_header.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+    # Faixa teal
+    ax_header.axhspan(0, 0.08, color=TEAL)
+    ax_header.text(0.01, 0.92, "RELATÓRIO DE ALOCAÇÃO", color=ACCENT,
+                   fontsize=9, fontweight="bold", va="top", transform=ax_header.transAxes,
+                   letter_spacing=2 if False else 0)
+    ax_header.text(0.01, 0.72, "Distribuição de Frota por Cluster", color="white",
+                   fontsize=18, fontweight="bold", va="top", transform=ax_header.transAxes)
+    ax_header.text(0.01, 0.32,
+                   f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}   ·   "
+                   f"Ocupação m³: {occupancy_m3:.0%}   ·   Ocupação kg: {occupancy_kg:.0%}   ·   "
+                   f"{n_clusters} clusters   ·   {n_hubs} HUBs",
+                   color="#AABCD0", fontsize=9, va="top", transform=ax_header.transAxes)
+
+    # ── KPIs ──────────────────────────────────────────
+    ax_kpis = fig.add_subplot(gs[1, :])
+    ax_kpis.set_facecolor("#F1F5F9")
+    for spine in ax_kpis.spines.values(): spine.set_visible(False)
+    ax_kpis.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
+    kpis = [
+        (str(total_usado),        "Veículos alocados",    NAVY),
+        (f"{util_geral:.1f}%",    "Utilização",           cor_util),
+        (str(total_oferta),       "Oferta total",         NAVY),
+        (str(total_saldo),        "Saldo restante",       TEAL),
+        (str(n_sinergia),         "Em sinergia",          PURPLE),
+        (f"{'⚠' if n_faltas>0 else '✓'} {n_faltas}", "Clusters c/ falta", cor_falta),
+    ]
+    kpi_w = 1 / len(kpis)
+    for i, (val, lbl, cor) in enumerate(kpis):
+        x = i * kpi_w + kpi_w * 0.05
+        w = kpi_w * 0.90
+        ax_kpis.add_patch(FancyBboxPatch((x, 0.05), w, 0.90,
+            boxstyle="round,pad=0.02", linewidth=1,
+            edgecolor="#D0DAFF", facecolor="white",
+            transform=ax_kpis.transAxes))
+        ax_kpis.text(x + w/2, 0.68, val, color=cor, fontsize=16, fontweight="bold",
+                     ha="center", va="center", transform=ax_kpis.transAxes)
+        ax_kpis.text(x + w/2, 0.22, lbl, color=GRAY, fontsize=8,
+                     ha="center", va="center", transform=ax_kpis.transAxes)
+
+    # ── GRÁFICO 1: HUB ────────────────────────────────
+    ax_hub = fig.add_subplot(gs[2, 0])
     if not uso_hub_df.empty:
-        hub_tot = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=True)
-        fig_hub = px.bar(hub_tot, x="Veiculos", y="HUB", orientation="h", text="Veiculos",
-                         color="Veiculos", color_continuous_scale=["#028090","#02C39A"])
-        fig_hub.update_traces(textposition="outside")
-        fig_hub.update_coloraxes(showscale=False)
-        img_hub_b64 = plotly_fig_to_b64(fig_hub)
+        hub_tot = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos")
+        bars = ax_hub.barh(hub_tot["HUB"], hub_tot["Veiculos"],
+                           color=[TEAL if i%2==0 else ACCENT for i in range(len(hub_tot))],
+                           edgecolor="white", height=0.6)
+        for bar, val in zip(bars, hub_tot["Veiculos"]):
+            ax_hub.text(bar.get_width() + hub_tot["Veiculos"].max()*0.01,
+                        bar.get_y() + bar.get_height()/2,
+                        str(int(val)), va="center", fontsize=8, color=NAVY, fontweight="bold")
+        ax_hub.set_facecolor("#F8FAFC")
+        ax_hub.spines["top"].set_visible(False); ax_hub.spines["right"].set_visible(False)
+        ax_hub.tick_params(labelsize=8)
+        ax_hub.set_xlim(0, hub_tot["Veiculos"].max() * 1.18)
+    ax_hub.set_title("🏭  Veículos por HUB", fontsize=11, fontweight="bold", color=NAVY, pad=8)
 
-    # ── Gráfico 2: Pizza classes ──────────────────────
-    img_cls_b64 = None
+    # ── GRÁFICO 2: Pizza classes ──────────────────────
+    ax_cls = fig.add_subplot(gs[2, 1])
     if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
         cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
-        cls_tot = cls_tot[cls_tot["Usado"] > 0]
-        fig_cls = px.pie(cls_tot, names="vehicle_class", values="Usado", hole=0.45,
-                         color_discrete_sequence=["#1E2761","#028090","#02C39A","#F59E0B","#EF4444","#534AB7"])
-        fig_cls.update_traces(textposition="inside", textinfo="percent+label")
-        img_cls_b64 = plotly_fig_to_b64(fig_cls)
-
-    # ── Gráfico 3: Oferta vs Usado ────────────────────
-    img_frota_b64 = None
-    if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
-        df_melt = resumo_frota_df[["Tipo Frota","Oferta","Usado"]].melt(
-            id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd")
-        fig_frota = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group", text="Qtd",
-                           color_discrete_map={"Oferta":"#2E4DA3","Usado":"#02C39A"})
-        fig_frota.update_traces(textposition="outside")
-        img_frota_b64 = plotly_fig_to_b64(fig_frota)
-
-    # ── Gráfico 4: Utilização % ───────────────────────
-    img_util_b64 = None
-    if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
-        df_util = resumo_frota_df.copy()
-        df_util["Util_%"] = (df_util["Utilizacao_%"] * 100).round(1)
-        df_util["Cor"] = df_util["Util_%"].apply(
-            lambda x: "#1D9E75" if x >= 80 else ("#EF9F27" if x >= 50 else "#E24B4A"))
-        fig_util = px.bar(df_util, x="Tipo Frota", y="Util_%",
-                          text=df_util["Util_%"].astype(str) + "%",
-                          color="Cor", color_discrete_map="identity")
-        fig_util.update_traces(textposition="outside")
-        fig_util.update_layout(showlegend=False, yaxis_range=[0, 115])
-        img_util_b64 = plotly_fig_to_b64(fig_util)
-
-    # ── Se kaleido não está disponível, usa matplotlib ──
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    def mpl_bar_h(labels, values, title, cmap_start="#028090", cmap_end="#02C39A"):
-        fig, ax = plt.subplots(figsize=(6.5, max(2.5, len(labels)*0.45)))
-        colors = [cmap_start if i % 2 == 0 else cmap_end for i in range(len(labels))]
-        bars = ax.barh(labels, values, color=colors, edgecolor="white")
-        for bar, val in zip(bars, values):
-            ax.text(bar.get_width() + max(values)*0.01, bar.get_y() + bar.get_height()/2,
-                    str(int(val)), va="center", fontsize=9, color="#1E2761", fontweight="bold")
-        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
-        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
-        ax.set_facecolor("#F8FAFC"); fig.patch.set_facecolor("white")
-        plt.tight_layout()
-        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-        plt.close(fig); buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
-
-    def mpl_bar_grouped(df, x_col, groups, colors_map, title):
-        import numpy as np
-        labels = df[x_col].tolist()
-        x = np.arange(len(labels)); w = 0.35
-        fig, ax = plt.subplots(figsize=(6.5, 3))
-        for i, (g, c) in enumerate(colors_map.items()):
-            if g in df.columns:
-                vals = df[g].tolist()
-                bars = ax.bar(x + i*w - w/2, vals, w, label=g, color=c, edgecolor="white")
-                for bar, val in zip(bars, vals):
-                    if val > 0:
-                        ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.5,
-                                str(int(val)), ha="center", fontsize=7, color="#1E2761")
-        ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=8, rotation=20)
-        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
-        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
-        ax.set_facecolor("#F8FAFC"); fig.patch.set_facecolor("white")
-        ax.legend(fontsize=8); plt.tight_layout()
-        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-        plt.close(fig); buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
-
-    def mpl_pie(labels, values, title):
-        fig, ax = plt.subplots(figsize=(4.5, 3.5))
-        colors = ["#1E2761","#028090","#02C39A","#F59E0B","#EF4444","#534AB7","#64748B"]
-        wedges, texts, autotexts = ax.pie(values, labels=labels, autopct="%1.0f%%",
-            colors=colors[:len(values)], pctdistance=0.75,
-            wedgeprops=dict(width=0.55, edgecolor="white"))
-        for t in texts: t.set_fontsize(8)
-        for at in autotexts: at.set_fontsize(7); at.set_color("white")
-        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
-        fig.patch.set_facecolor("white"); plt.tight_layout()
-        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-        plt.close(fig); buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
-
-    def mpl_util(df, title):
-        fig, ax = plt.subplots(figsize=(6.5, 3))
-        vals = (df["Utilizacao_%"] * 100).round(1).tolist()
-        labels = df["Tipo Frota"].tolist()
-        colors = ["#1D9E75" if v >= 80 else ("#EF9F27" if v >= 50 else "#E24B4A") for v in vals]
-        bars = ax.bar(labels, vals, color=colors, edgecolor="white")
-        for bar, val in zip(bars, vals):
-            ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+1,
-                    f"{val:.0f}%", ha="center", fontsize=8, color="#1E2761", fontweight="bold")
-        ax.set_ylim(0, 115); ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
-        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
-        ax.set_facecolor("#F8FAFC"); fig.patch.set_facecolor("white"); plt.tight_layout()
-        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-        plt.close(fig); buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
-
-    # Usa matplotlib como fallback se kaleido não funcionou
-    if img_hub_b64 is None and not uso_hub_df.empty:
-        hub_tot = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=True)
-        img_hub_b64 = mpl_bar_h(hub_tot["HUB"].tolist(), hub_tot["Veiculos"].tolist(), "Veículos por HUB")
-
-    if img_cls_b64 is None and not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
-        cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
-        cls_tot = cls_tot[cls_tot["Usado"] > 0]
-        img_cls_b64 = mpl_pie(cls_tot["vehicle_class"].tolist(), cls_tot["Usado"].tolist(), "Distribuição por Classe")
-
-    if img_frota_b64 is None and not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
-        img_frota_b64 = mpl_bar_grouped(resumo_frota_df, "Tipo Frota",
-            ["Oferta","Usado"], {"Oferta":"#2E4DA3","Usado":"#02C39A"}, "Oferta vs Utilizado")
-
-    if img_util_b64 is None and not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
-        img_util_b64 = mpl_util(resumo_frota_df, "Utilização % por Frota")
-
-    # ── Helper: tabela HTML ───────────────────────────
-    def df_to_html_table(df, max_rows=12):
-        if df is None or df.empty:
-            return "<p style='color:#94a3b8;font-size:12px'>Sem dados</p>"
-        df = df.head(max_rows).copy()
-        for c in df.select_dtypes(include="float").columns:
-            df[c] = df[c].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "")
-        rows_html = "".join(
-            f"<tr>{''.join(f'<td>{v}</td>' for v in row)}</tr>"
-            for row in df.itertuples(index=False)
+        cls_tot = cls_tot[cls_tot["Usado"] > 0].sort_values("Usado", ascending=False)
+        cores = [NAVY, TEAL, ACCENT, AMBER, CORAL, PURPLE, GRAY]
+        wedges, texts, autotexts = ax_cls.pie(
+            cls_tot["Usado"], labels=cls_tot["vehicle_class"],
+            autopct="%1.0f%%", colors=cores[:len(cls_tot)],
+            pctdistance=0.78, wedgeprops=dict(width=0.55, edgecolor="white"),
+            startangle=90,
         )
-        headers_html = "".join(f"<th>{c}</th>" for c in df.columns)
-        return f"<table><thead><tr>{headers_html}</tr></thead><tbody>{rows_html}</tbody></table>"
+        for t in texts: t.set_fontsize(8); t.set_color(NAVY)
+        for at in autotexts: at.set_fontsize(7); at.set_color("white"); at.set_fontweight("bold")
+    ax_cls.set_title("🚛  Distribuição por Classe", fontsize=11, fontweight="bold", color=NAVY, pad=8)
+    ax_cls.set_facecolor("white")
 
-    def img_tag(b64, w="100%"):
-        if not b64:
-            return "<p style='color:#94a3b8'>Gráfico indisponível</p>"
-        return f'<img src="data:image/png;base64,{b64}" style="width:{w};border-radius:8px">'
+    # ── GRÁFICO 3: Oferta vs Usado ────────────────────
+    ax_frota = fig.add_subplot(gs[3, 0])
+    if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+        frotas = resumo_frota_df["Tipo Frota"].tolist()
+        x = np.arange(len(frotas)); w = 0.35
+        bars_o = ax_frota.bar(x - w/2, resumo_frota_df["Oferta"], w, label="Oferta", color=BLUE, edgecolor="white")
+        bars_u = ax_frota.bar(x + w/2, resumo_frota_df["Usado"],  w, label="Usado",  color=ACCENT, edgecolor="white")
+        for bars in [bars_o, bars_u]:
+            for bar in bars:
+                v = bar.get_height()
+                if v > 0:
+                    ax_frota.text(bar.get_x()+bar.get_width()/2, v+0.5, str(int(v)),
+                                  ha="center", fontsize=7, color=NAVY, fontweight="bold")
+        ax_frota.set_xticks(x); ax_frota.set_xticklabels(frotas, fontsize=8, rotation=15)
+        ax_frota.tick_params(labelsize=8)
+        ax_frota.legend(fontsize=8, loc="upper right")
+        ax_frota.set_facecolor("#F8FAFC")
+        ax_frota.spines["top"].set_visible(False); ax_frota.spines["right"].set_visible(False)
+    ax_frota.set_title("📊  Oferta vs Utilizado por Frota", fontsize=11, fontweight="bold", color=NAVY, pad=8)
 
-    # ── Tabela resumo frota ───────────────────────────
-    df_frota_show = pd.DataFrame()
+    # ── GRÁFICO 4: Utilização % ───────────────────────
+    ax_util = fig.add_subplot(gs[3, 1])
+    if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
+        frotas = resumo_frota_df["Tipo Frota"].tolist()
+        vals   = (resumo_frota_df["Utilizacao_%"] * 100).round(1).tolist()
+        cores  = [GREEN if v >= 80 else (AMBER if v >= 50 else CORAL) for v in vals]
+        bars   = ax_util.bar(frotas, vals, color=cores, edgecolor="white")
+        for bar, val in zip(bars, vals):
+            ax_util.text(bar.get_x()+bar.get_width()/2, bar.get_height()+1,
+                         f"{val:.0f}%", ha="center", fontsize=8, color=NAVY, fontweight="bold")
+        ax_util.set_ylim(0, 115)
+        ax_util.tick_params(axis="x", labelsize=8, rotation=15)
+        ax_util.tick_params(axis="y", labelsize=8)
+        ax_util.set_facecolor("#F8FAFC")
+        ax_util.spines["top"].set_visible(False); ax_util.spines["right"].set_visible(False)
+        ax_util.axhline(80, color=GREEN, linewidth=0.8, linestyle="--", alpha=0.5)
+        ax_util.text(len(frotas)-0.5, 81, "meta 80%", fontsize=7, color=GREEN, alpha=0.7)
+    ax_util.set_title("📈  Utilização % por Frota", fontsize=11, fontweight="bold", color=NAVY, pad=8)
+
+    # ── TABELA: Resumo por Frota ──────────────────────
+    ax_tbl_frota = fig.add_subplot(gs[4, :])
+    ax_tbl_frota.axis("off")
+    ax_tbl_frota.set_title("📋  Resumo por Tipo de Frota", fontsize=11, fontweight="bold",
+                            color=NAVY, pad=8, loc="left")
     if not resumo_frota_df.empty:
-        df_frota_show = resumo_frota_df.copy()
-        if "Utilizacao_%" in df_frota_show.columns:
-            df_frota_show["Utilizacao_%"] = (df_frota_show["Utilizacao_%"]*100).round(1).astype(str)+"%"
+        df_show = resumo_frota_df.copy()
+        if "Utilizacao_%" in df_show.columns:
+            df_show["Utilizacao_%"] = (df_show["Utilizacao_%"]*100).round(1).astype(str) + "%"
+        cols = [c for c in ["Tipo Frota","Oferta","Usado","Saldo","Utilizacao_%"] if c in df_show.columns]
+        df_show = df_show[cols]
+        col_labels = [c.replace("_"," ") for c in cols]
+        cell_data  = df_show.values.tolist()
+        tbl = ax_tbl_frota.table(
+            cellText=cell_data, colLabels=col_labels,
+            cellLoc="center", loc="center",
+            bbox=[0, 0, 1, 1],
+        )
+        tbl.auto_set_font_size(False); tbl.set_fontsize(9)
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_edgecolor("#D0DAFF")
+            if row == 0:
+                cell.set_facecolor(NAVY); cell.set_text_props(color="white", fontweight="bold")
+            elif row % 2 == 0:
+                cell.set_facecolor(LGRAY)
+            else:
+                cell.set_facecolor("white")
 
-    # ── Tabela top HUBs ───────────────────────────────
-    hub_rank = pd.DataFrame()
+    # ── TABELA: Top HUBs + Faltas ─────────────────────
+    ax_tbl_hub   = fig.add_subplot(gs[5, 0])
+    ax_tbl_falta = fig.add_subplot(gs[5, 1])
+
+    ax_tbl_hub.axis("off")
+    ax_tbl_hub.set_title("🏆  Top HUBs por volume", fontsize=11, fontweight="bold",
+                          color=NAVY, pad=8, loc="left")
     if not uso_hub_df.empty:
-        hub_rank = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=False)
+        hub_rank = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=False).head(8)
+        tbl2 = ax_tbl_hub.table(
+            cellText=hub_rank.values.tolist(), colLabels=["HUB","Veículos"],
+            cellLoc="center", loc="center", bbox=[0, 0, 1, 1],
+        )
+        tbl2.auto_set_font_size(False); tbl2.set_fontsize(9)
+        for (row, col), cell in tbl2.get_celld().items():
+            cell.set_edgecolor("#D0DAFF")
+            if row == 0:
+                cell.set_facecolor(TEAL); cell.set_text_props(color="white", fontweight="bold")
+            elif row % 2 == 0:
+                cell.set_facecolor(LGRAY)
+            else:
+                cell.set_facecolor("white")
 
-    # ── Tabela faltas ─────────────────────────────────
-    df_falt_show = pd.DataFrame()
-    if not faltas_df.empty:
-        cols_falt = ["Cluster","Veiculos_SemOferta","Gap_m3","Gap_kg"]
-        df_falt_show = faltas_df[[c for c in cols_falt if c in faltas_df.columns]].head(10)
+    ax_tbl_falta.axis("off")
+    titulo_falta = "⚠️  Clusters com falta" if n_faltas > 0 else "✅  Sem faltas de oferta"
+    ax_tbl_falta.set_title(titulo_falta, fontsize=11, fontweight="bold",
+                            color=CORAL if n_faltas > 0 else GREEN, pad=8, loc="left")
+    if n_faltas > 0 and not faltas_df.empty:
+        cols_f = ["Cluster","Veiculos_SemOferta","Gap_m3","Gap_kg"]
+        df_f   = faltas_df[[c for c in cols_f if c in faltas_df.columns]].head(8)
+        for c in df_f.select_dtypes("float").columns:
+            df_f[c] = df_f[c].round(1)
+        tbl3 = ax_tbl_falta.table(
+            cellText=df_f.values.tolist(),
+            colLabels=[c.replace("_"," ") for c in df_f.columns],
+            cellLoc="center", loc="center", bbox=[0, 0, 1, 1],
+        )
+        tbl3.auto_set_font_size(False); tbl3.set_fontsize(8)
+        for (row, col), cell in tbl3.get_celld().items():
+            cell.set_edgecolor("#FFD0D0")
+            if row == 0:
+                cell.set_facecolor(CORAL); cell.set_text_props(color="white", fontweight="bold")
+            elif row % 2 == 0:
+                cell.set_facecolor("#FFF5F5")
+            else:
+                cell.set_facecolor("white")
+    elif n_faltas == 0:
+        ax_tbl_falta.text(0.5, 0.5, "Todos os clusters foram\natendidos com sucesso ✓",
+                          ha="center", va="center", fontsize=12, color=GREEN,
+                          fontweight="bold", transform=ax_tbl_falta.transAxes)
 
-    falta_badge = (f'<span style="color:#E24B4A;font-weight:700">⚠️ {n_faltas} cluster(s) com falta</span>'
-                   if n_faltas > 0 else
-                   '<span style="color:#1D9E75;font-weight:700">✅ Sem faltas de oferta</span>')
+    # ── RODAPÉ ────────────────────────────────────────
+    ax_footer = fig.add_subplot(gs[6, :])
+    ax_footer.axis("off")
+    ax_footer.text(0.5, 0.6, "Gerado automaticamente pelo App de Alocação de Veículos por Cluster",
+                   ha="center", va="center", fontsize=8, color=GRAY,
+                   transform=ax_footer.transAxes)
+    ax_footer.axhline(0.85, color=TEAL, linewidth=1.5, transform=ax_footer.transAxes)
 
-    # ── Monta HTML do report ──────────────────────────
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<style>
-  * {{ box-sizing:border-box; margin:0; padding:0; }}
-  body {{ font-family:Arial,sans-serif; background:#F1F5F9; padding:24px; width:1280px; }}
-  .header {{ background:linear-gradient(135deg,#1E2761,#028090); border-radius:12px;
-             padding:20px 28px; margin-bottom:20px; }}
-  .header h1 {{ color:white; font-size:22px; margin-bottom:4px; }}
-  .header p  {{ color:#AABCD0; font-size:12px; }}
-  .header .tag {{ color:#02C39A; font-size:11px; font-weight:700;
-                  text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }}
-  .kpis {{ display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:20px; }}
-  .kpi  {{ background:white; border-radius:10px; padding:14px 10px; text-align:center;
-           border:1px solid #E2E8F0; }}
-  .kpi .val {{ font-size:22px; font-weight:700; }}
-  .kpi .lbl {{ font-size:10px; color:#64748B; margin-top:2px; }}
-  .row2 {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }}
-  .card {{ background:white; border-radius:10px; padding:16px; border:1px solid #E2E8F0; }}
-  .card h3 {{ font-size:12px; font-weight:700; color:#1E2761; margin-bottom:10px;
-              padding-bottom:6px; border-bottom:2px solid #028090; }}
-  table {{ width:100%; border-collapse:collapse; font-size:11px; }}
-  th {{ background:#1E2761; color:white; padding:6px 8px; text-align:left; }}
-  td {{ padding:5px 8px; color:#374151; border-bottom:1px solid #F0F4FF; }}
-  tr:nth-child(even) td {{ background:#F8FAFF; }}
-  .footer {{ text-align:center; font-size:10px; color:#94a3b8; margin-top:16px; }}
-</style>
-</head>
-<body>
-
-<div class="header">
-  <div class="tag">Relatório de Alocação</div>
-  <h1>Distribuição de Frota por Cluster</h1>
-  <p>Gerado em {datetime.now().strftime("%d/%m/%Y às %H:%M")} &nbsp;·&nbsp;
-     Ocupação m³: {occupancy_m3:.0%} &nbsp;·&nbsp; Ocupação kg: {occupancy_kg:.0%} &nbsp;·&nbsp;
-     {n_clusters} clusters &nbsp;·&nbsp; {n_hubs} HUBs</p>
-</div>
-
-<div class="kpis">
-  <div class="kpi"><div class="val" style="color:#1E2761">{total_usado}</div><div class="lbl">Veículos alocados</div></div>
-  <div class="kpi"><div class="val" style="color:{cor_util}">{util_geral:.1f}%</div><div class="lbl">Utilização</div></div>
-  <div class="kpi"><div class="val" style="color:#1E2761">{total_oferta}</div><div class="lbl">Oferta total</div></div>
-  <div class="kpi"><div class="val" style="color:#028090">{total_oferta - total_usado}</div><div class="lbl">Saldo restante</div></div>
-  <div class="kpi"><div class="val" style="color:#534AB7">{n_sinergia}</div><div class="lbl">Em sinergia</div></div>
-  <div class="kpi"><div class="val" style="color:{cor_falta}">{"⚠ " if n_faltas>0 else "✓ "}{n_faltas}</div><div class="lbl">Clusters c/ falta</div></div>
-</div>
-
-<div class="row2">
-  <div class="card"><h3>🏭 Veículos por HUB</h3>{img_tag(img_hub_b64)}</div>
-  <div class="card"><h3>🚛 Distribuição por Classe</h3>{img_tag(img_cls_b64)}</div>
-</div>
-
-<div class="row2">
-  <div class="card"><h3>📊 Oferta vs Utilizado por Frota</h3>{img_tag(img_frota_b64)}</div>
-  <div class="card"><h3>📈 Utilização % por Frota</h3>{img_tag(img_util_b64)}</div>
-</div>
-
-<div class="row2">
-  <div class="card">
-    <h3>📋 Resumo por Tipo de Frota</h3>
-    {df_to_html_table(df_frota_show)}
-  </div>
-  <div class="card">
-    <h3>🏆 Top HUBs por volume &nbsp; | &nbsp; {falta_badge}</h3>
-    {df_to_html_table(hub_rank, max_rows=6)}
-    {"<br>" + df_to_html_table(df_falt_show) if not df_falt_show.empty else ""}
-  </div>
-</div>
-
-<div class="footer">Gerado automaticamente pelo App de Alocação de Veículos por Cluster</div>
-</body>
-</html>"""
-
-    # ── HTML → PNG via imgkit ─────────────────────────
-    options = {
-        "format": "png",
-        "width": "1280",
-        "quality": "95",
-        "quiet": "",
-        "enable-local-file-access": "",
-    }
-    png_bytes = imgkit.from_string(html, False, options=options)
-    return png_bytes
+    # ── Salva PNG ─────────────────────────────────────
+    buf = _io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="#F1F5F9")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
 
 
 # =========================
