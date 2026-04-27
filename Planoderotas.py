@@ -1291,14 +1291,15 @@ run = st.button("Rodar alocação", type="primary", disabled=not (plan_file and 
 
 if run:
     try:
-        # Aplica ocupação dos sliders sobrescrevendo as constantes globais
-        global OCCUPANCY_M3, OCCUPANCY_KG, VUC_BASE_M3_EFF, VUC_BASE_KG_EFF, MEDIO_BASE_M3_EFF, MEDIO_BASE_KG_EFF
-        OCCUPANCY_M3 = occupancy_m3
-        OCCUPANCY_KG = occupancy_kg
-        VUC_BASE_M3_EFF = 16 * OCCUPANCY_M3
-        VUC_BASE_KG_EFF = 1800 * OCCUPANCY_KG
-        MEDIO_BASE_M3_EFF = 37 * OCCUPANCY_M3
-        MEDIO_BASE_KG_EFF = 3500 * OCCUPANCY_KG
+        # Aplica ocupação dos sliders sobrescrevendo as constantes no módulo
+        import sys
+        mod = sys.modules[__name__]
+        mod.OCCUPANCY_M3 = occupancy_m3
+        mod.OCCUPANCY_KG = occupancy_kg
+        mod.VUC_BASE_M3_EFF = 16 * occupancy_m3
+        mod.VUC_BASE_KG_EFF = 1800 * occupancy_kg
+        mod.MEDIO_BASE_M3_EFF = 37 * occupancy_m3
+        mod.MEDIO_BASE_KG_EFF = 3500 * occupancy_kg
 
         progress = st.progress(0, text="Lendo arquivos...")
         plan_df = load_excel(plan_file)
