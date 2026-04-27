@@ -1,9 +1,11 @@
 import io
 import math
 import re
+import unicodedata
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 # =========================
@@ -18,6 +20,18 @@ FLEET_PRIORITY = {
     "SPOT": 3,
     "SPOT DPC": 4,  # <- última prioridade
 }
+
+# HUB exclusivo para modais elétricos
+ELECTRIC_HUB = "BRRC01"
+
+# Pesos do score de cauda (hub_tail_score)
+SCORE_HEAVY_WEIGHT = 0.55
+SCORE_P95_WEIGHT = 0.45
+SCORE_HEAVY_THRESHOLD = 0.75  # % do baseline efetivo para considerar "pesado"
+
+# Limites para auto-detecção de colunas invertidas (Modal x Tipo Frota)
+SWAP_MIN_FLEET_PCT = 0.50
+SWAP_MIN_DELTA = 0.30
 
 # =========================
 # SANITY HELPERS (auto-correção de colunas Modal x Tipo Frota)
@@ -37,9 +51,11 @@ def _maybe_swap_modal_frota(plan_df: pd.DataFrame, col_modal: str, col_frota: st
     try:
         pct_modal = _fleet_match_pct(plan_df[col_modal])
         pct_frota = _fleet_match_pct(plan_df[col_frota])
-    except Exception:
+    except Exception as e:
+        st.warning(f"⚠️ Auto-correção de colunas (Modal/Tipo Frota) falhou: {e}. Usando colunas como detectadas.")
         return col_modal, col_frota
-    if pct_frota < 0.50 and pct_modal > 0.50 and (pct_modal - pct_frota) > 0.30:
+    if pct_frota < SWAP_MIN_FLEET_PCT and pct_modal > SWAP_MIN_FLEET_PCT and (pct_modal - pct_frota) > SWAP_MIN_DELTA:
+        st.info("🔄 Colunas 'Modal' e 'Tipo Frota' detectadas invertidas — corrigido automaticamente.")
         return col_frota, col_modal
     return col_modal, col_frota
 
@@ -89,12 +105,7 @@ def norm(s: str) -> str:
     - Mantém apenas A-Z, 0-9 e espaços
     """
     s = str(s).upper()
-    try:
-        import unicodedata
-        s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
-    except Exception:
-        # fallback: segue sem remoção de acentos
-        pass
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
     s = re.sub(r"[^A-Z0-9]+", " ", s).strip()
     return s
 
@@ -261,8 +272,8 @@ def hub_tail_score(is_hub: pd.DataFrame):
     fits = ~overs
     df_fit = is_hub[fits].copy()
 
-    thr_kg = 0.75 * VUC_BASE_KG_EFF
-    thr_m3 = 0.75 * VUC_BASE_M3_EFF
+    thr_kg = SCORE_HEAVY_THRESHOLD * VUC_BASE_KG_EFF
+    thr_m3 = SCORE_HEAVY_THRESHOLD * VUC_BASE_M3_EFF
     heavy = df_fit[(df_fit["Peso_kg"] >= thr_kg) | (df_fit["Volume_m3"] >= thr_m3)]
 
     heavy_kg = float(heavy["Peso_kg"].sum())
@@ -272,12 +283,12 @@ def hub_tail_score(is_hub: pd.DataFrame):
     p95_m3 = float(np.nanpercentile(m3, 95)) if len(m3) else 0.0
 
     score = (
-        0.55
+        SCORE_HEAVY_WEIGHT
         * max(
             heavy_kg / VUC_BASE_KG_EFF if VUC_BASE_KG_EFF else 0,
             heavy_m3 / VUC_BASE_M3_EFF if VUC_BASE_M3_EFF else 0,
         )
-        + 0.45
+        + SCORE_P95_WEIGHT
         * (
             0.5 * (p95_kg / VUC_BASE_KG_EFF if VUC_BASE_KG_EFF else 0)
             + 0.5 * (p95_m3 / VUC_BASE_M3_EFF if VUC_BASE_M3_EFF else 0)
@@ -377,7 +388,6 @@ def allocate_one_best(
 
     # Regra: modais elétricos rodam exclusivamente no HUB BRRC01.
     # Se a demanda for de outro HUB, esses modais não podem ser selecionados.
-    ELECTRIC_HUB = "BRRC01"
     electric_mask = eligible["Modal"].astype(str).apply(lambda x: is_electric_modal(x))
     if demand_hub is not None:
         if str(demand_hub).strip().upper() != ELECTRIC_HUB:
@@ -662,7 +672,10 @@ def allocate_for_cluster(
         rem_kg = float(hub_demand[hub]["rem_kg"])
         rem_m3 = float(hub_demand[hub]["rem_m3"])
 
-        while rem_kg > 1e-6 or rem_m3 > 1e-6:
+        max_iter = len(plan_pool) + 10
+        iter_count = 0
+        while (rem_kg > 1e-6 or rem_m3 > 1e-6) and iter_count < max_iter:
+            iter_count += 1
             row, plan_pool = allocate_one_best(
                 plan_pool,
                 lambda r: True,
@@ -1196,40 +1209,93 @@ def build_demand_vs_output_vs_plan(
 st.set_page_config(page_title="Alocação por Cluster", layout="wide")
 st.title("Alocação de Veículos por Cluster (Plano x ISs)")
 
+
+@st.cache_data
+def load_excel(file) -> pd.DataFrame:
+    return pd.read_excel(file)
+
+
+def preview_columns(df: pd.DataFrame, label: str, col_map: dict):
+    """Mostra na sidebar quais colunas foram detectadas no arquivo."""
+    st.caption(f"**{label} — colunas detectadas:**")
+    for name, col in col_map.items():
+        if col:
+            st.caption(f"✅ {name} → `{col}`")
+        else:
+            st.caption(f"❌ {name} → não encontrada")
+
+
 with st.sidebar:
     st.header("Upload dos arquivos")
     plan_file = st.file_uploader("PlanoRotas (Excel)", type=["xlsx"])
-    is_file = st.file_uploader("ISsDIa (Excel)", type=["xlsx"])
+    is_file = st.file_uploader("ISsDia (Excel)", type=["xlsx"])
 
     st.divider()
-    st.caption("Config atual:")
-    st.write(f"- OCCUPANCY_M3: {OCCUPANCY_M3}")
-    st.write(f"- OCCUPANCY_KG: {OCCUPANCY_KG}")
-    st.write(f"- MIN_MEDIO OVERSIZE: >= {MIN_MEDIO_OVERSIZE_M3} m³ ou >= {MIN_MEDIO_OVERSIZE_KG} kg")
+
+    # Sliders de ocupação editáveis
+    st.subheader("Configuração")
+    occupancy_m3 = st.slider("Ocupação m³", 0.50, 1.00, OCCUPANCY_M3, 0.05, format="%.2f")
+    occupancy_kg = st.slider("Ocupação kg", 0.50, 1.00, OCCUPANCY_KG, 0.05, format="%.2f")
 
     enable_synergy = st.checkbox(
-        "Ativar sinergia: clusters com mesmo prefixo antes do ponto (ex: 'CLUSTER 1.x')",
+        "Ativar sinergia entre clusters com mesmo prefixo",
         value=True,
     )
+
+    st.divider()
+    st.caption(f"MIN_MEDIO OVERSIZE: >= {MIN_MEDIO_OVERSIZE_M3} m³ ou >= {MIN_MEDIO_OVERSIZE_KG} kg")
+    st.caption(f"HUB Elétrico: {ELECTRIC_HUB}")
+
+    # Prévia das colunas detectadas após upload
+    if plan_file:
+        try:
+            _prev_plan = load_excel(plan_file)
+            preview_columns(_prev_plan, "PlanoRotas", {
+                "Cluster": find_col(_prev_plan, ["Cluster"]),
+                "Transportadora": find_col(_prev_plan, ["Transportadora", "Carrier", "Transporter"]),
+                "Modal": find_col(_prev_plan, ["Modal", "Perfil"]),
+                "Tipo Frota": find_col(_prev_plan, ["Tipo Frota", "Frota", "Fleet Type"]),
+                "Disponibilidade": find_col(_prev_plan, ["Disponibilidade de Modais", "Disponibilidade", "Qtd", "Quantidade"]),
+            })
+        except Exception:
+            pass
+
+    if is_file:
+        try:
+            _prev_is = load_excel(is_file)
+            preview_columns(_prev_is, "ISsDia", {
+                "Cluster": find_col(_prev_is, ["CLUSTER", "Cluster"]),
+                "HUB": find_col(_prev_is, ["HUB", "Warehouse", "WH", "WAREHOUSE_ID"]),
+                "Peso": find_col(_prev_is, ["Peso(kg)", "Peso", "KG", "WEIGHT"]),
+                "Volume": find_col(_prev_is, ["Volume(m³)", "Volume", "M3", "M³", "CUBAGEM"]),
+            })
+        except Exception:
+            pass
 
 run = st.button("Rodar alocação", type="primary", disabled=not (plan_file and is_file))
 
 if run:
     try:
-        with st.spinner("Lendo arquivos e processando..."):
-            plan_df = pd.read_excel(plan_file)
-            is_df = pd.read_excel(is_file)
+        progress = st.progress(0, text="Lendo arquivos...")
+        plan_df = load_excel(plan_file)
+        is_df = load_excel(is_file)
+        progress.progress(20, text="Processando alocação...")
 
-            # ✅ agora retorna isdata normalizado também
-            output_consolidado, saldo_plano, debug_alloc, saldo_debug, plan_common, isdata_norm = run_allocation(
-                plan_df, is_df, enable_synergy=enable_synergy, return_debug=True
-            )
+        # Aplica ocupação dos sliders sobrescrevendo as constantes globais
+        global OCCUPANCY_M3, OCCUPANCY_KG, VUC_BASE_M3_EFF, VUC_BASE_KG_EFF, MEDIO_BASE_M3_EFF, MEDIO_BASE_KG_EFF
+        OCCUPANCY_M3 = occupancy_m3
+        OCCUPANCY_KG = occupancy_kg
+        VUC_BASE_M3_EFF = 16 * OCCUPANCY_M3
+        VUC_BASE_KG_EFF = 1800 * OCCUPANCY_KG
+        MEDIO_BASE_M3_EFF = 37 * OCCUPANCY_M3
+        MEDIO_BASE_KG_EFF = 3500 * OCCUPANCY_KG
 
-        st.success("Processamento concluído!")
+        output_consolidado, saldo_plano, debug_alloc, saldo_debug, plan_common, isdata_norm = run_allocation(
+            plan_df, is_df, enable_synergy=enable_synergy, return_debug=True
+        )
+        progress.progress(70, text="Montando análises...")
 
         analyses = build_analyses(output_consolidado, saldo_plano, debug_alloc, plan_common)
-
-        # ✅ NOVO: adiciona diagnóstico Demanda x Output x PlanoRotas
         demand_checks = build_demand_vs_output_vs_plan(
             isdata=isdata_norm,
             output_final=output_consolidado,
@@ -1237,12 +1303,120 @@ if run:
             saldo_final=saldo_plano,
         )
         analyses.update(demand_checks)
+        progress.progress(100, text="Concluído!")
+        progress.empty()
 
-        with st.expander("📊 Análises de distribuição (clique para abrir)", expanded=True):
+        st.success("✅ Processamento concluído!")
+
+        # =========================
+        # PAINEL DE ALERTAS EXECUTIVOS
+        # =========================
+        faltas_df = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
+        sinergia_df = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
+        resumo_frota_df = analyses.get("Resumo_Frota", pd.DataFrame())
+
+        n_faltas = len(faltas_df) if not faltas_df.empty else 0
+        n_sinergia = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
+        util_geral = 0.0
+        if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns and "Oferta" in resumo_frota_df.columns:
+            total_oferta = resumo_frota_df["Oferta"].sum()
+            total_usado = resumo_frota_df["Usado"].sum() if "Usado" in resumo_frota_df.columns else 0
+            util_geral = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
+
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            if n_faltas > 0:
+                st.error(f"⚠️ {n_faltas} cluster(s) com falta de oferta")
+            else:
+                st.success("✅ Nenhum cluster com falta de oferta")
+        with col_b:
+            st.info(f"🔄 {n_sinergia} veículo(s) em sinergia entre clusters")
+        with col_c:
+            st.metric("Utilização geral", f"{util_geral:.1f}%")
+
+        st.divider()
+
+        # =========================
+        # FILTROS INTERATIVOS
+        # =========================
+        st.subheader("Filtros")
+        all_clusters = sorted(output_consolidado["Cluster"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+        all_hubs = sorted(output_consolidado["HUB"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+        all_frotas = sorted(output_consolidado["Tipo Frota"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            sel_clusters = st.multiselect("Cluster", all_clusters, placeholder="Todos")
+        with fc2:
+            sel_hubs = st.multiselect("HUB", all_hubs, placeholder="Todos")
+        with fc3:
+            sel_frotas = st.multiselect("Tipo Frota", all_frotas, placeholder="Todas")
+
+        out_filtrado = output_consolidado.copy() if not output_consolidado.empty else output_consolidado
+        if sel_clusters:
+            out_filtrado = out_filtrado[out_filtrado["Cluster"].astype(str).isin(sel_clusters)]
+        if sel_hubs:
+            out_filtrado = out_filtrado[out_filtrado["HUB"].astype(str).isin(sel_hubs)]
+        if sel_frotas:
+            out_filtrado = out_filtrado[out_filtrado["Tipo Frota"].astype(str).isin(sel_frotas)]
+
+        # =========================
+        # GRÁFICOS
+        # =========================
+        with st.expander("📈 Gráficos de utilização", expanded=True):
+            g1, g2 = st.columns(2)
+
+            with g1:
+                st.markdown("**Oferta vs Usado por Tipo Frota**")
+                if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+                    df_melt = resumo_frota_df[["Tipo Frota", "Oferta", "Usado"]].melt(
+                        id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd"
+                    )
+                    fig = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group",
+                                 color_discrete_map={"Oferta": "#378ADD", "Usado": "#1D9E75"})
+                    fig.update_layout(margin=dict(t=10, b=10), height=300, legend_title_text="")
+                    st.plotly_chart(fig, use_container_width=True)
+
+            with g2:
+                st.markdown("**Utilização % por Tipo Frota**")
+                if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
+                    fig2 = px.bar(resumo_frota_df, x="Tipo Frota", y="Utilizacao_%",
+                                  color="Utilizacao_%",
+                                  color_continuous_scale=["#E24B4A", "#EF9F27", "#1D9E75"],
+                                  range_color=[0, 1])
+                    fig2.update_layout(margin=dict(t=10, b=10), height=300, showlegend=False)
+                    fig2.update_traces(texttemplate="%{y:.0%}", textposition="outside")
+                    st.plotly_chart(fig2, use_container_width=True)
+
+            g3, g4 = st.columns(2)
+            with g3:
+                st.markdown("**Veículos alocados por HUB**")
+                uso_hub = analyses.get("Uso_HUB_Frota", pd.DataFrame())
+                if not uso_hub.empty:
+                    hub_tot = uso_hub.groupby("HUB", as_index=False)["Veiculos"].sum()
+                    fig3 = px.bar(hub_tot, x="HUB", y="Veiculos", color_discrete_sequence=["#534AB7"])
+                    fig3.update_layout(margin=dict(t=10, b=10), height=280)
+                    st.plotly_chart(fig3, use_container_width=True)
+
+            with g4:
+                st.markdown("**Distribuição por Classe de Veículo**")
+                resumo_cls_df = analyses.get("Resumo_Classe", pd.DataFrame())
+                if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
+                    cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
+                    cls_tot = cls_tot[cls_tot["Usado"] > 0]
+                    fig4 = px.pie(cls_tot, names="vehicle_class", values="Usado",
+                                  color_discrete_sequence=px.colors.qualitative.Safe)
+                    fig4.update_layout(margin=dict(t=10, b=10), height=280)
+                    st.plotly_chart(fig4, use_container_width=True)
+
+        # =========================
+        # ANÁLISES DETALHADAS
+        # =========================
+        with st.expander("📊 Análises de distribuição", expanded=False):
             st.subheader("Resumo por Tipo de Frota (Oferta x Usado x Saldo)")
             st.dataframe(analyses.get("Resumo_Frota"), use_container_width=True, hide_index=True)
 
-            st.subheader("Resumo por Classe de Veículo (VUC/VAN/MEDIO/TRUCK/CARRETA...)")
+            st.subheader("Resumo por Classe de Veículo")
             st.dataframe(analyses.get("Resumo_Classe"), use_container_width=True, hide_index=True)
 
             cA, cB = st.columns(2)
@@ -1259,31 +1433,32 @@ if run:
             st.subheader("Uso por Cluster x Transportadora")
             st.dataframe(analyses.get("Uso_Cluster_Transportadora"), use_container_width=True, hide_index=True)
 
-            st.subheader("Sinergia: empréstimos entre clusters (Cluster_Oferta → Cluster demanda)")
+            st.subheader("Sinergia: empréstimos entre clusters")
             st.dataframe(analyses.get("Sinergia_Emprestimos"), use_container_width=True, hide_index=True)
 
-            st.subheader("Proporcionalidade por bucket (Grupo_Sinergia + Frota + Classe)")
+            st.subheader("Proporcionalidade por bucket")
             st.dataframe(analyses.get("Proporcionalidade_Bucket"), use_container_width=True, hide_index=True)
 
             st.divider()
-
-            # ✅ NOVAS TABELAS (o que você pediu)
-            st.subheader("✅ Demanda (ISsDia) x Capacidade Alocada (Output) x Plano de Rotas — por Cluster")
+            st.subheader("✅ Demanda x Capacidade Alocada x Plano — por Cluster")
             st.dataframe(analyses.get("Demanda_vs_Capacidade_Cluster"), use_container_width=True, hide_index=True)
 
-            st.subheader("✅ Demanda (ISsDia) x Capacidade Alocada (Output) — por HUB (Plano de Rotas não é por HUB)")
+            st.subheader("✅ Demanda x Capacidade Alocada — por HUB")
             st.dataframe(analyses.get("Demanda_vs_Capacidade_HUB"), use_container_width=True, hide_index=True)
 
-            st.subheader("⚠️ Clusters com indicativo de falta (SEM OFERTA e/ou gap de m³/kg)")
+            st.subheader("⚠️ Clusters com indicativo de falta")
             st.dataframe(analyses.get("Faltas_Resumo_Cluster"), use_container_width=True, hide_index=True)
 
+        # =========================
+        # OUTPUT PRINCIPAL (com filtros aplicados)
+        # =========================
         c1, c2 = st.columns(2)
         with c1:
-            st.subheader("output_consolidado")
-            st.dataframe(output_consolidado, use_container_width=True, hide_index=True)
+            st.subheader("output_consolidado" + (" (filtrado)" if any([sel_clusters, sel_hubs, sel_frotas]) else ""))
+            st.dataframe(out_filtrado, use_container_width=True, hide_index=True)
             st.download_button(
                 "⬇️ Baixar output_consolidado (CSV)",
-                data=to_csv_bytes(output_consolidado),
+                data=to_csv_bytes(out_filtrado),
                 file_name="output_consolidado.csv",
                 mime="text/csv",
             )
