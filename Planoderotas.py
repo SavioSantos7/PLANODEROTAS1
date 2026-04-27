@@ -1606,6 +1606,325 @@ def generate_pdf_report(
 
 
 # =========================
+# GERAÇÃO DE PNG DO REPORT
+# =========================
+def generate_report_png(
+    output_final: pd.DataFrame,
+    analyses: dict,
+    occupancy_m3: float,
+    occupancy_kg: float,
+) -> bytes:
+    """Gera um PNG do dashboard de relatório usando plotly + HTML + imgkit."""
+    import io as _io
+    import base64
+    import imgkit
+    from datetime import datetime
+    import plotly.express as px
+    import plotly.io as pio
+
+    resumo_frota_df = analyses.get("Resumo_Frota", pd.DataFrame())
+    resumo_cls_df   = analyses.get("Resumo_Classe", pd.DataFrame())
+    uso_hub_df      = analyses.get("Uso_HUB_Frota", pd.DataFrame())
+    faltas_df       = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
+    sinergia_df     = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
+
+    # ── Métricas ─────────────────────────────────────
+    n_faltas      = len(faltas_df) if not faltas_df.empty else 0
+    n_sinergia    = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
+    total_oferta  = int(resumo_frota_df["Oferta"].sum())  if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns else 0
+    total_usado   = int(resumo_frota_df["Usado"].sum())   if not resumo_frota_df.empty and "Usado"  in resumo_frota_df.columns else 0
+    util_geral    = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
+    n_clusters    = output_final["Cluster"].nunique() if not output_final.empty else 0
+    n_hubs        = output_final["HUB"].nunique()     if not output_final.empty else 0
+    cor_util      = "#1D9E75" if util_geral >= 80 else ("#EF9F27" if util_geral >= 50 else "#E24B4A")
+    cor_falta     = "#E24B4A" if n_faltas > 0 else "#1D9E75"
+
+    # ── Helper: fig plotly → base64 PNG ──────────────
+    def fig_to_b64(fig, w=700, h=320):
+        fig.update_layout(
+            paper_bgcolor="white", plot_bgcolor="#F8FAFC",
+            font=dict(family="Arial", size=11, color="#1E2761"),
+            margin=dict(t=30, b=40, l=50, r=20),
+        )
+        img = fig.to_image(format="png", width=w, height=h, scale=2,
+                           engine="kaleido") if False else None
+        # fallback: usar orca via subprocess ou matplotlib
+        buf = _io.BytesIO()
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        return None  # será substituído abaixo
+
+    def plotly_fig_to_b64(fig, w=680, h=300):
+        """Converte fig plotly para PNG base64 via kaleido se disponível, senão matplotlib."""
+        try:
+            img_bytes = pio.to_image(fig, format="png", width=w, height=h, scale=2)
+            return base64.b64encode(img_bytes).decode()
+        except Exception:
+            return None
+
+    # ── Gráfico 1: HUB (barras horizontais) ──────────
+    img_hub_b64 = None
+    if not uso_hub_df.empty:
+        hub_tot = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=True)
+        fig_hub = px.bar(hub_tot, x="Veiculos", y="HUB", orientation="h", text="Veiculos",
+                         color="Veiculos", color_continuous_scale=["#028090","#02C39A"])
+        fig_hub.update_traces(textposition="outside")
+        fig_hub.update_coloraxes(showscale=False)
+        img_hub_b64 = plotly_fig_to_b64(fig_hub)
+
+    # ── Gráfico 2: Pizza classes ──────────────────────
+    img_cls_b64 = None
+    if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
+        cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
+        cls_tot = cls_tot[cls_tot["Usado"] > 0]
+        fig_cls = px.pie(cls_tot, names="vehicle_class", values="Usado", hole=0.45,
+                         color_discrete_sequence=["#1E2761","#028090","#02C39A","#F59E0B","#EF4444","#534AB7"])
+        fig_cls.update_traces(textposition="inside", textinfo="percent+label")
+        img_cls_b64 = plotly_fig_to_b64(fig_cls)
+
+    # ── Gráfico 3: Oferta vs Usado ────────────────────
+    img_frota_b64 = None
+    if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+        df_melt = resumo_frota_df[["Tipo Frota","Oferta","Usado"]].melt(
+            id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd")
+        fig_frota = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group", text="Qtd",
+                           color_discrete_map={"Oferta":"#2E4DA3","Usado":"#02C39A"})
+        fig_frota.update_traces(textposition="outside")
+        img_frota_b64 = plotly_fig_to_b64(fig_frota)
+
+    # ── Gráfico 4: Utilização % ───────────────────────
+    img_util_b64 = None
+    if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
+        df_util = resumo_frota_df.copy()
+        df_util["Util_%"] = (df_util["Utilizacao_%"] * 100).round(1)
+        df_util["Cor"] = df_util["Util_%"].apply(
+            lambda x: "#1D9E75" if x >= 80 else ("#EF9F27" if x >= 50 else "#E24B4A"))
+        fig_util = px.bar(df_util, x="Tipo Frota", y="Util_%",
+                          text=df_util["Util_%"].astype(str) + "%",
+                          color="Cor", color_discrete_map="identity")
+        fig_util.update_traces(textposition="outside")
+        fig_util.update_layout(showlegend=False, yaxis_range=[0, 115])
+        img_util_b64 = plotly_fig_to_b64(fig_util)
+
+    # ── Se kaleido não está disponível, usa matplotlib ──
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def mpl_bar_h(labels, values, title, cmap_start="#028090", cmap_end="#02C39A"):
+        fig, ax = plt.subplots(figsize=(6.5, max(2.5, len(labels)*0.45)))
+        colors = [cmap_start if i % 2 == 0 else cmap_end for i in range(len(labels))]
+        bars = ax.barh(labels, values, color=colors, edgecolor="white")
+        for bar, val in zip(bars, values):
+            ax.text(bar.get_width() + max(values)*0.01, bar.get_y() + bar.get_height()/2,
+                    str(int(val)), va="center", fontsize=9, color="#1E2761", fontweight="bold")
+        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.set_facecolor("#F8FAFC"); fig.patch.set_facecolor("white")
+        plt.tight_layout()
+        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig); buf.seek(0)
+        return base64.b64encode(buf.read()).decode()
+
+    def mpl_bar_grouped(df, x_col, groups, colors_map, title):
+        import numpy as np
+        labels = df[x_col].tolist()
+        x = np.arange(len(labels)); w = 0.35
+        fig, ax = plt.subplots(figsize=(6.5, 3))
+        for i, (g, c) in enumerate(colors_map.items()):
+            if g in df.columns:
+                vals = df[g].tolist()
+                bars = ax.bar(x + i*w - w/2, vals, w, label=g, color=c, edgecolor="white")
+                for bar, val in zip(bars, vals):
+                    if val > 0:
+                        ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.5,
+                                str(int(val)), ha="center", fontsize=7, color="#1E2761")
+        ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=8, rotation=20)
+        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.set_facecolor("#F8FAFC"); fig.patch.set_facecolor("white")
+        ax.legend(fontsize=8); plt.tight_layout()
+        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig); buf.seek(0)
+        return base64.b64encode(buf.read()).decode()
+
+    def mpl_pie(labels, values, title):
+        fig, ax = plt.subplots(figsize=(4.5, 3.5))
+        colors = ["#1E2761","#028090","#02C39A","#F59E0B","#EF4444","#534AB7","#64748B"]
+        wedges, texts, autotexts = ax.pie(values, labels=labels, autopct="%1.0f%%",
+            colors=colors[:len(values)], pctdistance=0.75,
+            wedgeprops=dict(width=0.55, edgecolor="white"))
+        for t in texts: t.set_fontsize(8)
+        for at in autotexts: at.set_fontsize(7); at.set_color("white")
+        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
+        fig.patch.set_facecolor("white"); plt.tight_layout()
+        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig); buf.seek(0)
+        return base64.b64encode(buf.read()).decode()
+
+    def mpl_util(df, title):
+        fig, ax = plt.subplots(figsize=(6.5, 3))
+        vals = (df["Utilizacao_%"] * 100).round(1).tolist()
+        labels = df["Tipo Frota"].tolist()
+        colors = ["#1D9E75" if v >= 80 else ("#EF9F27" if v >= 50 else "#E24B4A") for v in vals]
+        bars = ax.bar(labels, vals, color=colors, edgecolor="white")
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+1,
+                    f"{val:.0f}%", ha="center", fontsize=8, color="#1E2761", fontweight="bold")
+        ax.set_ylim(0, 115); ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold")
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.set_facecolor("#F8FAFC"); fig.patch.set_facecolor("white"); plt.tight_layout()
+        buf = _io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig); buf.seek(0)
+        return base64.b64encode(buf.read()).decode()
+
+    # Usa matplotlib como fallback se kaleido não funcionou
+    if img_hub_b64 is None and not uso_hub_df.empty:
+        hub_tot = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=True)
+        img_hub_b64 = mpl_bar_h(hub_tot["HUB"].tolist(), hub_tot["Veiculos"].tolist(), "Veículos por HUB")
+
+    if img_cls_b64 is None and not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
+        cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
+        cls_tot = cls_tot[cls_tot["Usado"] > 0]
+        img_cls_b64 = mpl_pie(cls_tot["vehicle_class"].tolist(), cls_tot["Usado"].tolist(), "Distribuição por Classe")
+
+    if img_frota_b64 is None and not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+        img_frota_b64 = mpl_bar_grouped(resumo_frota_df, "Tipo Frota",
+            ["Oferta","Usado"], {"Oferta":"#2E4DA3","Usado":"#02C39A"}, "Oferta vs Utilizado")
+
+    if img_util_b64 is None and not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
+        img_util_b64 = mpl_util(resumo_frota_df, "Utilização % por Frota")
+
+    # ── Helper: tabela HTML ───────────────────────────
+    def df_to_html_table(df, max_rows=12):
+        if df is None or df.empty:
+            return "<p style='color:#94a3b8;font-size:12px'>Sem dados</p>"
+        df = df.head(max_rows).copy()
+        for c in df.select_dtypes(include="float").columns:
+            df[c] = df[c].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "")
+        rows_html = "".join(
+            f"<tr>{''.join(f'<td>{v}</td>' for v in row)}</tr>"
+            for row in df.itertuples(index=False)
+        )
+        headers_html = "".join(f"<th>{c}</th>" for c in df.columns)
+        return f"<table><thead><tr>{headers_html}</tr></thead><tbody>{rows_html}</tbody></table>"
+
+    def img_tag(b64, w="100%"):
+        if not b64:
+            return "<p style='color:#94a3b8'>Gráfico indisponível</p>"
+        return f'<img src="data:image/png;base64,{b64}" style="width:{w};border-radius:8px">'
+
+    # ── Tabela resumo frota ───────────────────────────
+    df_frota_show = pd.DataFrame()
+    if not resumo_frota_df.empty:
+        df_frota_show = resumo_frota_df.copy()
+        if "Utilizacao_%" in df_frota_show.columns:
+            df_frota_show["Utilizacao_%"] = (df_frota_show["Utilizacao_%"]*100).round(1).astype(str)+"%"
+
+    # ── Tabela top HUBs ───────────────────────────────
+    hub_rank = pd.DataFrame()
+    if not uso_hub_df.empty:
+        hub_rank = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=False)
+
+    # ── Tabela faltas ─────────────────────────────────
+    df_falt_show = pd.DataFrame()
+    if not faltas_df.empty:
+        cols_falt = ["Cluster","Veiculos_SemOferta","Gap_m3","Gap_kg"]
+        df_falt_show = faltas_df[[c for c in cols_falt if c in faltas_df.columns]].head(10)
+
+    falta_badge = (f'<span style="color:#E24B4A;font-weight:700">⚠️ {n_faltas} cluster(s) com falta</span>'
+                   if n_faltas > 0 else
+                   '<span style="color:#1D9E75;font-weight:700">✅ Sem faltas de oferta</span>')
+
+    # ── Monta HTML do report ──────────────────────────
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ font-family:Arial,sans-serif; background:#F1F5F9; padding:24px; width:1280px; }}
+  .header {{ background:linear-gradient(135deg,#1E2761,#028090); border-radius:12px;
+             padding:20px 28px; margin-bottom:20px; }}
+  .header h1 {{ color:white; font-size:22px; margin-bottom:4px; }}
+  .header p  {{ color:#AABCD0; font-size:12px; }}
+  .header .tag {{ color:#02C39A; font-size:11px; font-weight:700;
+                  text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }}
+  .kpis {{ display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:20px; }}
+  .kpi  {{ background:white; border-radius:10px; padding:14px 10px; text-align:center;
+           border:1px solid #E2E8F0; }}
+  .kpi .val {{ font-size:22px; font-weight:700; }}
+  .kpi .lbl {{ font-size:10px; color:#64748B; margin-top:2px; }}
+  .row2 {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }}
+  .card {{ background:white; border-radius:10px; padding:16px; border:1px solid #E2E8F0; }}
+  .card h3 {{ font-size:12px; font-weight:700; color:#1E2761; margin-bottom:10px;
+              padding-bottom:6px; border-bottom:2px solid #028090; }}
+  table {{ width:100%; border-collapse:collapse; font-size:11px; }}
+  th {{ background:#1E2761; color:white; padding:6px 8px; text-align:left; }}
+  td {{ padding:5px 8px; color:#374151; border-bottom:1px solid #F0F4FF; }}
+  tr:nth-child(even) td {{ background:#F8FAFF; }}
+  .footer {{ text-align:center; font-size:10px; color:#94a3b8; margin-top:16px; }}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="tag">Relatório de Alocação</div>
+  <h1>Distribuição de Frota por Cluster</h1>
+  <p>Gerado em {datetime.now().strftime("%d/%m/%Y às %H:%M")} &nbsp;·&nbsp;
+     Ocupação m³: {occupancy_m3:.0%} &nbsp;·&nbsp; Ocupação kg: {occupancy_kg:.0%} &nbsp;·&nbsp;
+     {n_clusters} clusters &nbsp;·&nbsp; {n_hubs} HUBs</p>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="val" style="color:#1E2761">{total_usado}</div><div class="lbl">Veículos alocados</div></div>
+  <div class="kpi"><div class="val" style="color:{cor_util}">{util_geral:.1f}%</div><div class="lbl">Utilização</div></div>
+  <div class="kpi"><div class="val" style="color:#1E2761">{total_oferta}</div><div class="lbl">Oferta total</div></div>
+  <div class="kpi"><div class="val" style="color:#028090">{total_oferta - total_usado}</div><div class="lbl">Saldo restante</div></div>
+  <div class="kpi"><div class="val" style="color:#534AB7">{n_sinergia}</div><div class="lbl">Em sinergia</div></div>
+  <div class="kpi"><div class="val" style="color:{cor_falta}">{"⚠ " if n_faltas>0 else "✓ "}{n_faltas}</div><div class="lbl">Clusters c/ falta</div></div>
+</div>
+
+<div class="row2">
+  <div class="card"><h3>🏭 Veículos por HUB</h3>{img_tag(img_hub_b64)}</div>
+  <div class="card"><h3>🚛 Distribuição por Classe</h3>{img_tag(img_cls_b64)}</div>
+</div>
+
+<div class="row2">
+  <div class="card"><h3>📊 Oferta vs Utilizado por Frota</h3>{img_tag(img_frota_b64)}</div>
+  <div class="card"><h3>📈 Utilização % por Frota</h3>{img_tag(img_util_b64)}</div>
+</div>
+
+<div class="row2">
+  <div class="card">
+    <h3>📋 Resumo por Tipo de Frota</h3>
+    {df_to_html_table(df_frota_show)}
+  </div>
+  <div class="card">
+    <h3>🏆 Top HUBs por volume &nbsp; | &nbsp; {falta_badge}</h3>
+    {df_to_html_table(hub_rank, max_rows=6)}
+    {"<br>" + df_to_html_table(df_falt_show) if not df_falt_show.empty else ""}
+  </div>
+</div>
+
+<div class="footer">Gerado automaticamente pelo App de Alocação de Veículos por Cluster</div>
+</body>
+</html>"""
+
+    # ── HTML → PNG via imgkit ─────────────────────────
+    options = {
+        "format": "png",
+        "width": "1280",
+        "quality": "95",
+        "quiet": "",
+        "enable-local-file-access": "",
+    }
+    png_bytes = imgkit.from_string(html, False, options=options)
+    return png_bytes
+
+
+# =========================
 # STREAMLIT UI
 # =========================
 st.set_page_config(page_title="Alocação por Cluster", layout="wide", page_icon="🚛")
@@ -1724,12 +2043,18 @@ if run:
             saldo_final=saldo_plano,
         )
         analyses.update(demand_checks)
-        progress.progress(90, text="Gerando relatório PDF...")
+        progress.progress(90, text="Gerando relatório PDF e PNG...")
         pdf_bytes = generate_pdf_report(
             output_final=output_consolidado,
             saldo_final=saldo_plano,
             analyses=analyses,
             isdata=isdata_norm,
+            occupancy_m3=occupancy_m3,
+            occupancy_kg=occupancy_kg,
+        )
+        png_bytes = generate_report_png(
+            output_final=output_consolidado,
+            analyses=analyses,
             occupancy_m3=occupancy_m3,
             occupancy_kg=occupancy_kg,
         )
@@ -1742,6 +2067,7 @@ if run:
             "saldo_plano": saldo_plano,
             "analyses": analyses,
             "pdf_bytes": pdf_bytes,
+            "png_bytes": png_bytes,
             "occupancy_m3": occupancy_m3,
             "occupancy_kg": occupancy_kg,
         }
@@ -1757,223 +2083,256 @@ if st.session_state.resultado is not None:
     saldo_plano        = r["saldo_plano"]
     analyses           = r["analyses"]
     pdf_bytes          = r["pdf_bytes"]
+    png_bytes          = r.get("png_bytes", None)
     occupancy_m3       = r["occupancy_m3"]
     occupancy_kg       = r["occupancy_kg"]
 
     if not run:
-        st.info("ℹ️ Exibindo resultado da última alocação. Suba novos arquivos e clique em **Rodar alocação** para atualizar.")
+        st.info("ℹ️ Exibindo resultado da última alocação. Clique em **Rodar alocação** para atualizar.")
 
-    # =========================
-    # MÉTRICAS EXECUTIVAS
-    # =========================
-    faltas_df = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
-    sinergia_df = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
+    # ── Cálculo das métricas ──────────────────────────
+    faltas_df       = analyses.get("Faltas_Resumo_Cluster", pd.DataFrame())
+    sinergia_df     = analyses.get("Sinergia_Emprestimos", pd.DataFrame())
     resumo_frota_df = analyses.get("Resumo_Frota", pd.DataFrame())
+    resumo_cls_df   = analyses.get("Resumo_Classe", pd.DataFrame())
+    uso_hub_df      = analyses.get("Uso_HUB_Frota", pd.DataFrame())
+    dist_car_df     = analyses.get("Distribuicao_Transportadora", pd.DataFrame())
 
-    n_faltas = len(faltas_df) if not faltas_df.empty else 0
-    n_sinergia = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
-    util_geral = 0.0
+    n_faltas      = len(faltas_df) if not faltas_df.empty else 0
+    n_sinergia    = int(sinergia_df["Veiculos"].sum()) if not sinergia_df.empty and "Veiculos" in sinergia_df.columns else 0
     total_alocados = 0
+    total_oferta   = 0
+    total_saldo    = 0
+    util_geral     = 0.0
     if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
-        total_oferta = resumo_frota_df["Oferta"].sum()
-        total_usado = resumo_frota_df["Usado"].sum() if "Usado" in resumo_frota_df.columns else 0
-        total_alocados = int(total_usado)
-        util_geral = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
+        total_oferta   = int(resumo_frota_df["Oferta"].sum())
+        total_usado    = int(resumo_frota_df["Usado"].sum()) if "Usado" in resumo_frota_df.columns else 0
+        total_saldo    = int(resumo_frota_df["Saldo"].sum()) if "Saldo" in resumo_frota_df.columns else 0
+        total_alocados = total_usado
+        util_geral     = (total_usado / total_oferta * 100) if total_oferta > 0 else 0.0
+    n_clusters = output_consolidado["Cluster"].nunique() if not output_consolidado.empty else 0
+    n_hubs     = output_consolidado["HUB"].nunique()     if not output_consolidado.empty else 0
 
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("🚛 Veículos alocados", total_alocados)
-    with m2:
-        st.metric("📊 Utilização geral", f"{util_geral:.1f}%")
-    with m3:
-        st.metric("🔄 Em sinergia", n_sinergia)
-    with m4:
-        if n_faltas > 0:
-            st.metric("⚠️ Clusters com falta", n_faltas)
-        else:
-            st.metric("✅ Clusters com falta", 0)
-
-    st.divider()
-
-    # =========================
-    # DOWNLOADS NO TOPO
-    # =========================
+    # ════════════════════════════════════════════════
+    # DOWNLOADS
+    # ════════════════════════════════════════════════
     sheets = {"output_consolidado": output_consolidado, "saldo_plano": saldo_plano, **analyses}
     excel_bytes = to_excel_bytes_multi(sheets)
 
     st.markdown("#### ⬇️ Downloads")
     dl1, dl2, dl3, dl4 = st.columns(4)
     with dl1:
-        st.download_button(
-            "📑 Relatório PDF",
-            data=pdf_bytes,
-            file_name="relatorio_alocacao.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            type="primary",
-        )
+        if png_bytes:
+            st.download_button("🖼️ Report (PNG)", data=png_bytes,
+                file_name="report_alocacao.png", mime="image/png",
+                use_container_width=True, type="primary")
     with dl2:
-        st.download_button(
-            "📥 Excel completo (todas as abas)",
-            data=excel_bytes,
-            file_name="output_alocacao_por_cluster.xlsx",
+        st.download_button("📥 Excel completo", data=excel_bytes,
+            file_name="output_alocacao.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+            use_container_width=True)
     with dl3:
-        st.download_button(
-            "📄 Output consolidado (CSV)",
-            data=to_csv_bytes(output_consolidado),
-            file_name="output_consolidado.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        st.download_button("📄 Output consolidado (CSV)", data=to_csv_bytes(output_consolidado),
+            file_name="output_consolidado.csv", mime="text/csv", use_container_width=True)
     with dl4:
-        st.download_button(
-            "📄 Saldo do plano (CSV)",
-            data=to_csv_bytes(saldo_plano),
-            file_name="saldo_plano.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        st.download_button("📄 Saldo do plano (CSV)", data=to_csv_bytes(saldo_plano),
+            file_name="saldo_plano.csv", mime="text/csv", use_container_width=True)
 
     st.divider()
 
-    # =========================
-    # ABAS PRINCIPAIS
-    # =========================
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Resultado",
-        "📈 Gráficos",
-        "📊 Análises detalhadas",
-        "⚠️ Diagnóstico de faltas",
-    ])
+    # ════════════════════════════════════════════════
+    # REPORT — CABEÇALHO
+    # ════════════════════════════════════════════════
+    from datetime import datetime
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#1E2761,#028090);border-radius:12px;padding:1.2rem 1.6rem;margin-bottom:1rem">
+        <div style="color:#02C39A;font-size:0.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase">Relatório de Alocação</div>
+        <div style="color:white;font-size:1.4rem;font-weight:700;margin:2px 0">Distribuição de Frota por Cluster</div>
+        <div style="color:#AABCD0;font-size:0.8rem">Gerado em {datetime.now().strftime("%d/%m/%Y às %H:%M")} &nbsp;·&nbsp; Ocupação m³: {occupancy_m3:.0%} &nbsp;·&nbsp; Ocupação kg: {occupancy_kg:.0%}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # ── ABA 1: RESULTADO ──────────────────────────────
-    with tab1:
-        st.markdown("##### Filtros")
-        all_clusters = sorted(output_consolidado["Cluster"].astype(str).unique().tolist()) if not output_consolidado.empty else []
-        all_hubs     = sorted(output_consolidado["HUB"].astype(str).unique().tolist()) if not output_consolidado.empty else []
-        all_frotas   = sorted(output_consolidado["Tipo Frota"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+    # ════════════════════════════════════════════════
+    # REPORT — KPIs
+    # ════════════════════════════════════════════════
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    kpi_style = "border:1px solid #E2E8F0;border-radius:10px;padding:0.7rem;text-align:center;background:#F8FAFF"
+    with k1:
+        st.markdown(f'<div style="{kpi_style}"><div style="font-size:1.6rem;font-weight:700;color:#1E2761">{total_alocados}</div><div style="font-size:0.7rem;color:#64748B">Veículos alocados</div></div>', unsafe_allow_html=True)
+    with k2:
+        cor_util = "#1D9E75" if util_geral >= 80 else "#EF9F27" if util_geral >= 50 else "#E24B4A"
+        st.markdown(f'<div style="{kpi_style}"><div style="font-size:1.6rem;font-weight:700;color:{cor_util}">{util_geral:.1f}%</div><div style="font-size:0.7rem;color:#64748B">Utilização</div></div>', unsafe_allow_html=True)
+    with k3:
+        st.markdown(f'<div style="{kpi_style}"><div style="font-size:1.6rem;font-weight:700;color:#1E2761">{total_oferta}</div><div style="font-size:0.7rem;color:#64748B">Oferta total</div></div>', unsafe_allow_html=True)
+    with k4:
+        st.markdown(f'<div style="{kpi_style}"><div style="font-size:1.6rem;font-weight:700;color:#534AB7">{n_sinergia}</div><div style="font-size:0.7rem;color:#64748B">Em sinergia</div></div>', unsafe_allow_html=True)
+    with k5:
+        st.markdown(f'<div style="{kpi_style}"><div style="font-size:1.6rem;font-weight:700;color:#1E2761">{n_clusters}</div><div style="font-size:0.7rem;color:#64748B">Clusters</div></div>', unsafe_allow_html=True)
+    with k6:
+        cor_falta = "#E24B4A" if n_faltas > 0 else "#1D9E75"
+        icone = "⚠️" if n_faltas > 0 else "✅"
+        st.markdown(f'<div style="{kpi_style}"><div style="font-size:1.6rem;font-weight:700;color:{cor_falta}">{icone} {n_faltas}</div><div style="font-size:0.7rem;color:#64748B">Clusters c/ falta</div></div>', unsafe_allow_html=True)
 
-        fc1, fc2, fc3 = st.columns(3)
-        with fc1:
-            sel_clusters = st.multiselect("Cluster", all_clusters, placeholder="Todos")
-        with fc2:
-            sel_hubs = st.multiselect("HUB", all_hubs, placeholder="Todos")
-        with fc3:
-            sel_frotas = st.multiselect("Tipo Frota", all_frotas, placeholder="Todas")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-        out_filtrado = output_consolidado.copy() if not output_consolidado.empty else output_consolidado
-        if sel_clusters:
-            out_filtrado = out_filtrado[out_filtrado["Cluster"].astype(str).isin(sel_clusters)]
-        if sel_hubs:
-            out_filtrado = out_filtrado[out_filtrado["HUB"].astype(str).isin(sel_hubs)]
-        if sel_frotas:
-            out_filtrado = out_filtrado[out_filtrado["Tipo Frota"].astype(str).isin(sel_frotas)]
+    # ════════════════════════════════════════════════
+    # REPORT — GRÁFICOS LINHA 1
+    # ════════════════════════════════════════════════
+    gc1, gc2 = st.columns(2)
 
-        r1, r2 = st.columns(2)
-        with r1:
-            label = "Output consolidado" + (" (filtrado)" if any([sel_clusters, sel_hubs, sel_frotas]) else "")
-            st.markdown(f"##### {label}")
-            st.dataframe(out_filtrado, use_container_width=True, hide_index=True, height=420)
-        with r2:
-            st.markdown("##### Saldo do plano (disponibilidade restante ≥ 1)")
-            st.dataframe(saldo_plano, use_container_width=True, hide_index=True, height=420)
+    with gc1:
+        st.markdown("##### 🏭 Veículos por HUB")
+        if not uso_hub_df.empty:
+            hub_tot = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=True)
+            fig_hub = px.bar(hub_tot, x="Veiculos", y="HUB", orientation="h",
+                text="Veiculos", color="Veiculos",
+                color_continuous_scale=["#028090","#02C39A"],
+                labels={"Veiculos": "Veículos", "HUB": ""})
+            fig_hub.update_traces(textposition="outside")
+            fig_hub.update_coloraxes(showscale=False)
+            fig_hub.update_layout(margin=dict(t=10,b=10,l=10,r=40), height=300,
+                plot_bgcolor="#F8FAFC", paper_bgcolor="white")
+            st.plotly_chart(fig_hub, use_container_width=True)
 
-    # ── ABA 2: GRÁFICOS ───────────────────────────────
-    with tab2:
-        g1, g2 = st.columns(2)
-        with g1:
-            st.markdown("**Oferta vs Usado por Tipo Frota**")
-            if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
-                df_melt = resumo_frota_df[["Tipo Frota", "Oferta", "Usado"]].melt(
-                    id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd"
-                )
-                fig = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group",
-                             color_discrete_map={"Oferta": "#378ADD", "Usado": "#1D9E75"})
-                fig.update_layout(margin=dict(t=10, b=10), height=320, legend_title_text="")
-                st.plotly_chart(fig, use_container_width=True)
+    with gc2:
+        st.markdown("##### 🚛 Distribuição por Classe de Veículo")
+        if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
+            cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
+            cls_tot = cls_tot[cls_tot["Usado"] > 0].sort_values("Usado", ascending=False)
+            fig_cls = px.pie(cls_tot, names="vehicle_class", values="Usado",
+                hole=0.45, color_discrete_sequence=["#1E2761","#028090","#02C39A","#F59E0B","#EF4444","#534AB7","#64748B"])
+            fig_cls.update_traces(textposition="inside", textinfo="percent+label")
+            fig_cls.update_layout(margin=dict(t=10,b=10), height=300,
+                showlegend=False, paper_bgcolor="white")
+            st.plotly_chart(fig_cls, use_container_width=True)
 
-        with g2:
-            st.markdown("**Utilização % por Tipo Frota**")
-            if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
-                fig2 = px.bar(resumo_frota_df, x="Tipo Frota", y="Utilizacao_%",
-                              color="Utilizacao_%",
-                              color_continuous_scale=["#E24B4A", "#EF9F27", "#1D9E75"],
-                              range_color=[0, 1])
-                fig2.update_layout(margin=dict(t=10, b=10), height=320, showlegend=False)
-                fig2.update_traces(texttemplate="%{y:.0%}", textposition="outside")
-                st.plotly_chart(fig2, use_container_width=True)
+    # ════════════════════════════════════════════════
+    # REPORT — GRÁFICOS LINHA 2
+    # ════════════════════════════════════════════════
+    gc3, gc4 = st.columns(2)
 
-        g3, g4 = st.columns(2)
-        with g3:
-            st.markdown("**Veículos alocados por HUB**")
-            uso_hub = analyses.get("Uso_HUB_Frota", pd.DataFrame())
-            if not uso_hub.empty:
-                hub_tot = uso_hub.groupby("HUB", as_index=False)["Veiculos"].sum()
-                fig3 = px.bar(hub_tot, x="HUB", y="Veiculos", color_discrete_sequence=["#534AB7"])
-                fig3.update_layout(margin=dict(t=10, b=10), height=300)
-                st.plotly_chart(fig3, use_container_width=True)
+    with gc3:
+        st.markdown("##### 📊 Oferta vs Utilizado por Tipo de Frota")
+        if not resumo_frota_df.empty and "Oferta" in resumo_frota_df.columns:
+            df_melt = resumo_frota_df[["Tipo Frota","Oferta","Usado"]].melt(
+                id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd")
+            fig_frota = px.bar(df_melt, x="Tipo Frota", y="Qtd", color="Métrica",
+                barmode="group", text="Qtd",
+                color_discrete_map={"Oferta":"#2E4DA3","Usado":"#02C39A"},
+                labels={"Qtd":"Veículos","Tipo Frota":""})
+            fig_frota.update_traces(textposition="outside")
+            fig_frota.update_layout(margin=dict(t=10,b=10), height=300,
+                legend_title_text="", plot_bgcolor="#F8FAFC", paper_bgcolor="white")
+            st.plotly_chart(fig_frota, use_container_width=True)
 
-        with g4:
-            st.markdown("**Distribuição por Classe de Veículo**")
-            resumo_cls_df = analyses.get("Resumo_Classe", pd.DataFrame())
-            if not resumo_cls_df.empty and "Usado" in resumo_cls_df.columns:
-                cls_tot = resumo_cls_df.groupby("vehicle_class", as_index=False)["Usado"].sum()
-                cls_tot = cls_tot[cls_tot["Usado"] > 0]
-                fig4 = px.pie(cls_tot, names="vehicle_class", values="Usado",
-                              color_discrete_sequence=px.colors.qualitative.Safe)
-                fig4.update_layout(margin=dict(t=10, b=10), height=300)
-                st.plotly_chart(fig4, use_container_width=True)
+    with gc4:
+        st.markdown("##### 📈 Utilização % por Tipo de Frota")
+        if not resumo_frota_df.empty and "Utilizacao_%" in resumo_frota_df.columns:
+            df_util = resumo_frota_df.copy()
+            df_util["Util_%"] = (df_util["Utilizacao_%"] * 100).round(1)
+            df_util["Cor"] = df_util["Util_%"].apply(
+                lambda x: "#1D9E75" if x >= 80 else ("#EF9F27" if x >= 50 else "#E24B4A"))
+            fig_util = px.bar(df_util, x="Tipo Frota", y="Util_%",
+                text=df_util["Util_%"].astype(str) + "%",
+                color="Cor", color_discrete_map="identity",
+                labels={"Util_%":"Utilização (%)","Tipo Frota":""})
+            fig_util.update_traces(textposition="outside")
+            fig_util.update_layout(margin=dict(t=10,b=10), height=300, showlegend=False,
+                plot_bgcolor="#F8FAFC", paper_bgcolor="white", yaxis_range=[0,115])
+            st.plotly_chart(fig_util, use_container_width=True)
 
-    # ── ABA 3: ANÁLISES DETALHADAS ────────────────────
-    with tab3:
-        st.markdown("##### Resumo por Tipo de Frota")
-        st.dataframe(analyses.get("Resumo_Frota"), use_container_width=True, hide_index=True)
+    # ════════════════════════════════════════════════
+    # REPORT — TABELA RESUMO POR FROTA
+    # ════════════════════════════════════════════════
+    st.markdown("##### 📋 Resumo por Tipo de Frota")
+    if not resumo_frota_df.empty:
+        df_show = resumo_frota_df.copy()
+        if "Utilizacao_%" in df_show.columns:
+            df_show["Utilizacao_%"] = (df_show["Utilizacao_%"] * 100).round(1).astype(str) + "%"
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
 
-        st.markdown("##### Resumo por Classe de Veículo")
-        st.dataframe(analyses.get("Resumo_Classe"), use_container_width=True, hide_index=True)
+    # ════════════════════════════════════════════════
+    # REPORT — TOP HUBs + ALERTA DE FALTAS
+    # ════════════════════════════════════════════════
+    col_hub, col_falta = st.columns(2)
 
-        cA, cB = st.columns(2)
-        with cA:
-            st.markdown("##### Uso por Cluster × Tipo Frota")
-            st.dataframe(analyses.get("Uso_Cluster_Frota"), use_container_width=True, hide_index=True)
-        with cB:
-            st.markdown("##### Uso por HUB × Tipo Frota")
-            st.dataframe(analyses.get("Uso_HUB_Frota"), use_container_width=True, hide_index=True)
+    with col_hub:
+        st.markdown("##### 🏆 Top HUBs por volume alocado")
+        if not uso_hub_df.empty:
+            hub_rank = uso_hub_df.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=False)
+            st.dataframe(hub_rank, use_container_width=True, hide_index=True)
 
-        st.markdown("##### Distribuição por Transportadora")
-        st.dataframe(analyses.get("Distribuicao_Transportadora"), use_container_width=True, hide_index=True)
-
-        st.markdown("##### Uso por Cluster × Transportadora")
-        st.dataframe(analyses.get("Uso_Cluster_Transportadora"), use_container_width=True, hide_index=True)
-
-        st.markdown("##### Sinergia — empréstimos entre clusters")
-        st.dataframe(analyses.get("Sinergia_Emprestimos"), use_container_width=True, hide_index=True)
-
-        st.markdown("##### Proporcionalidade por bucket")
-        st.dataframe(analyses.get("Proporcionalidade_Bucket"), use_container_width=True, hide_index=True)
-
-        st.markdown("##### Demanda × Capacidade Alocada × Plano — por Cluster")
-        st.dataframe(analyses.get("Demanda_vs_Capacidade_Cluster"), use_container_width=True, hide_index=True)
-
-        st.markdown("##### Demanda × Capacidade Alocada — por HUB")
-        st.dataframe(analyses.get("Demanda_vs_Capacidade_HUB"), use_container_width=True, hide_index=True)
-
-    # ── ABA 4: DIAGNÓSTICO DE FALTAS ──────────────────
-    with tab4:
+    with col_falta:
+        st.markdown("##### ⚠️ Clusters com falta de oferta")
         if n_faltas == 0:
-            st.success("✅ Nenhum cluster com falta de oferta nesta rodada.")
+            st.success("✅ Nenhum cluster com falta de oferta.")
         else:
-            st.error(f"⚠️ {n_faltas} cluster(s) com indicativo de falta de oferta ou gap de capacidade.")
-            st.dataframe(analyses.get("Faltas_Resumo_Cluster"), use_container_width=True, hide_index=True)
-            st.markdown("""
-> **O que significa cada coluna:**
-> - **Veiculos_SemOferta** — entregas registradas como `(SEM OFERTA)`, ou seja, sem veículo disponível no pool
-> - **Gap_m3 / Gap_kg** — diferença entre a demanda e a capacidade efetivamente alocada
-> - **Falta_Disponibilidade** — flag indicando que houve déficit nesse cluster
-            """)
+            cols_falt = ["Cluster","Veiculos_SemOferta","Gap_m3","Gap_kg"]
+            df_falt = faltas_df[[c for c in cols_falt if c in faltas_df.columns]]
+            st.dataframe(df_falt, use_container_width=True, hide_index=True)
+
+    # ════════════════════════════════════════════════
+    # REPORT — ANÁLISES DETALHADAS (EXPANSÍVEL)
+    # ════════════════════════════════════════════════
+    st.divider()
+    with st.expander("🔍 Análises detalhadas", expanded=False):
+        tab1, tab2, tab3 = st.tabs(["📋 Tabelas", "🔄 Sinergia", "📦 Output consolidado"])
+
+        with tab1:
+            st.markdown("##### Resumo por Classe de Veículo")
+            st.dataframe(analyses.get("Resumo_Classe"), use_container_width=True, hide_index=True)
+
+            cA, cB = st.columns(2)
+            with cA:
+                st.markdown("##### Uso por Cluster × Tipo Frota")
+                st.dataframe(analyses.get("Uso_Cluster_Frota"), use_container_width=True, hide_index=True)
+            with cB:
+                st.markdown("##### Uso por HUB × Tipo Frota")
+                st.dataframe(analyses.get("Uso_HUB_Frota"), use_container_width=True, hide_index=True)
+
+            st.markdown("##### Distribuição por Transportadora")
+            st.dataframe(analyses.get("Distribuicao_Transportadora"), use_container_width=True, hide_index=True)
+
+            st.markdown("##### Demanda × Capacidade Alocada — por Cluster")
+            st.dataframe(analyses.get("Demanda_vs_Capacidade_Cluster"), use_container_width=True, hide_index=True)
+
+            st.markdown("##### Demanda × Capacidade Alocada — por HUB")
+            st.dataframe(analyses.get("Demanda_vs_Capacidade_HUB"), use_container_width=True, hide_index=True)
+
+        with tab2:
+            st.markdown("##### Sinergia — empréstimos entre clusters")
+            st.dataframe(analyses.get("Sinergia_Emprestimos"), use_container_width=True, hide_index=True)
+            st.markdown("##### Proporcionalidade por bucket")
+            st.dataframe(analyses.get("Proporcionalidade_Bucket"), use_container_width=True, hide_index=True)
+
+        with tab3:
+            st.markdown("##### Filtros")
+            all_clusters = sorted(output_consolidado["Cluster"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+            all_hubs     = sorted(output_consolidado["HUB"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+            all_frotas   = sorted(output_consolidado["Tipo Frota"].astype(str).unique().tolist()) if not output_consolidado.empty else []
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                sel_clusters = st.multiselect("Cluster", all_clusters, placeholder="Todos")
+            with fc2:
+                sel_hubs = st.multiselect("HUB", all_hubs, placeholder="Todos")
+            with fc3:
+                sel_frotas = st.multiselect("Tipo Frota", all_frotas, placeholder="Todas")
+
+            out_filtrado = output_consolidado.copy() if not output_consolidado.empty else output_consolidado
+            if sel_clusters:
+                out_filtrado = out_filtrado[out_filtrado["Cluster"].astype(str).isin(sel_clusters)]
+            if sel_hubs:
+                out_filtrado = out_filtrado[out_filtrado["HUB"].astype(str).isin(sel_hubs)]
+            if sel_frotas:
+                out_filtrado = out_filtrado[out_filtrado["Tipo Frota"].astype(str).isin(sel_frotas)]
+
+            r1, r2 = st.columns(2)
+            with r1:
+                st.markdown("##### Output consolidado")
+                st.dataframe(out_filtrado, use_container_width=True, hide_index=True, height=400)
+            with r2:
+                st.markdown("##### Saldo do plano")
+                st.dataframe(saldo_plano, use_container_width=True, hide_index=True, height=400)
 
 else:
     st.info("Faça upload dos 2 arquivos na barra lateral e clique em **Rodar alocação**.")
