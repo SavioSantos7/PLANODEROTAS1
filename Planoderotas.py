@@ -1226,8 +1226,6 @@ def generate_pdf_report(
         HRFlowable, PageBreak, Image as RLImage,
     )
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-    import plotly.express as px
-    import plotly.io as pio
 
     # ── Paleta ────────────────────────────────────────────
     NAVY   = colors.HexColor("#1E2761")
@@ -1265,15 +1263,65 @@ def generate_pdf_report(
 
     story = []
 
-    # ── Helper: gráfico plotly → imagem ──────────────────
-    def fig_to_image(fig, width_cm=16, height_cm=7):
-        fig.update_layout(
-            paper_bgcolor="white", plot_bgcolor="#F8FAFC",
-            font=dict(family="Helvetica", size=9, color="#1E2761"),
-            margin=dict(t=30, b=30, l=40, r=20),
-        )
-        img_bytes = pio.to_image(fig, format="png", width=int(width_cm*37.8), height=int(height_cm*37.8), scale=2)
-        return RLImage(_io.BytesIO(img_bytes), width=width_cm*cm, height=height_cm*cm)
+    # ── Helper: gráfico matplotlib → imagem ─────────────
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    def bar_chart_image(labels, values, title, color="#028090", width_cm=16, height_cm=7):
+        fig, ax = plt.subplots(figsize=(width_cm/2.54, height_cm/2.54))
+        bars = ax.bar(labels, values, color=color, edgecolor="white", linewidth=0.5)
+        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold", pad=8)
+        ax.set_ylabel("Veículos", fontsize=8, color="#64748B")
+        ax.tick_params(axis="x", labelsize=7, rotation=30)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.set_facecolor("#F8FAFC")
+        fig.patch.set_facecolor("white")
+        for bar, val in zip(bars, values):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(values)*0.01,
+                    str(int(val)), ha="center", va="bottom", fontsize=7, color="#1E2761", fontweight="bold")
+        plt.tight_layout()
+        buf_img = _io.BytesIO()
+        fig.savefig(buf_img, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        buf_img.seek(0)
+        return RLImage(buf_img, width=width_cm*cm, height=height_cm*cm)
+
+    def grouped_bar_image(df_melt, x_col, y_col, color_col, title, color_map=None, width_cm=16, height_cm=7):
+        groups = df_melt[x_col].unique()
+        series = df_melt[color_col].unique()
+        x = np.arange(len(groups))
+        width = 0.35
+        fig, ax = plt.subplots(figsize=(width_cm/2.54, height_cm/2.54))
+        default_colors = ["#2E4DA3", "#02C39A", "#F59E0B", "#EF4444"]
+        for i, s in enumerate(series):
+            vals = [df_melt[(df_melt[x_col]==g) & (df_melt[color_col]==s)][y_col].values[0]
+                    if len(df_melt[(df_melt[x_col]==g) & (df_melt[color_col]==s)]) > 0 else 0
+                    for g in groups]
+            c = (color_map or {}).get(s, default_colors[i % len(default_colors)])
+            bars = ax.bar(x + i*width - width*(len(series)-1)/2, vals, width, label=s, color=c, edgecolor="white", linewidth=0.5)
+            for bar, val in zip(bars, vals):
+                if val > 0:
+                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                            str(int(val)), ha="center", va="bottom", fontsize=6, color="#1E2761")
+        ax.set_title(title, fontsize=10, color="#1E2761", fontweight="bold", pad=8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(groups, fontsize=7, rotation=20)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.set_facecolor("#F8FAFC")
+        fig.patch.set_facecolor("white")
+        ax.legend(fontsize=7)
+        plt.tight_layout()
+        buf_img = _io.BytesIO()
+        fig.savefig(buf_img, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        buf_img.seek(0)
+        return RLImage(buf_img, width=width_cm*cm, height=height_cm*cm)
 
     # ── Helper: tabela estilizada ─────────────────────────
     def make_table(df, col_widths=None, max_rows=20):
@@ -1406,14 +1454,10 @@ def generate_pdf_report(
     uso_hub = analyses.get("Uso_HUB_Frota", pd.DataFrame())
     if not uso_hub.empty:
         hub_tot = uso_hub.groupby("HUB", as_index=False)["Veiculos"].sum().sort_values("Veiculos", ascending=False)
-        fig_hub = px.bar(
-            hub_tot, x="HUB", y="Veiculos", text="Veiculos",
-            color="Veiculos", color_continuous_scale=["#028090", "#02C39A"],
-            title="Veículos alocados por HUB",
-        )
-        fig_hub.update_traces(textposition="outside")
-        fig_hub.update_coloraxes(showscale=False)
-        story.append(fig_to_image(fig_hub, width_cm=16, height_cm=7))
+        story.append(bar_chart_image(
+            hub_tot["HUB"].tolist(), hub_tot["Veiculos"].tolist(),
+            "Veículos alocados por HUB", color="#028090", width_cm=16, height_cm=7,
+        ))
         story.append(Spacer(1, 0.2*cm))
 
         # Top 3 HUBs
@@ -1434,13 +1478,12 @@ def generate_pdf_report(
         df_melt = resumo_frota[["Tipo Frota", "Oferta", "Usado"]].melt(
             id_vars="Tipo Frota", var_name="Métrica", value_name="Qtd"
         )
-        fig_frota = px.bar(
-            df_melt, x="Tipo Frota", y="Qtd", color="Métrica", barmode="group",
-            text="Qtd", title="Oferta vs Utilizado por Tipo de Frota",
-            color_discrete_map={"Oferta": "#2E4DA3", "Usado": "#02C39A"},
-        )
-        fig_frota.update_traces(textposition="outside")
-        story.append(fig_to_image(fig_frota, width_cm=16, height_cm=7))
+        story.append(grouped_bar_image(
+            df_melt, x_col="Tipo Frota", y_col="Qtd", color_col="Métrica",
+            title="Oferta vs Utilizado por Tipo de Frota",
+            color_map={"Oferta": "#2E4DA3", "Usado": "#02C39A"},
+            width_cm=16, height_cm=7,
+        ))
         story.append(Spacer(1, 0.2*cm))
 
         # Tabela resumo frota
@@ -1465,15 +1508,12 @@ def generate_pdf_report(
     if not resumo_cls.empty and "Usado" in resumo_cls.columns:
         cls_tot = resumo_cls.groupby("vehicle_class", as_index=False)["Usado"].sum()
         cls_tot = cls_tot[cls_tot["Usado"] > 0].sort_values("Usado", ascending=False)
-
-        g1, g2 = cls_tot.copy(), cls_tot.copy()
-        fig_cls_bar = px.bar(
-            g1, x="vehicle_class", y="Usado", text="Usado",
-            color="vehicle_class", title="Veículos por classe",
-            color_discrete_sequence=px.colors.qualitative.Safe,
-        )
-        fig_cls_bar.update_traces(textposition="outside", showlegend=False)
-        story.append(fig_to_image(fig_cls_bar, width_cm=16, height_cm=6.5))
+        colors_cls = ["#028090","#2E4DA3","#F59E0B","#EF4444","#10B981","#534AB7","#64748B","#02C39A"]
+        story.append(bar_chart_image(
+            cls_tot["vehicle_class"].tolist(), cls_tot["Usado"].tolist(),
+            "Veículos alocados por Classe",
+            color=colors_cls[0], width_cm=16, height_cm=6.5,
+        ))
         story.append(Spacer(1, 0.3*cm))
 
     # ══════════════════════════════════════════════════════
