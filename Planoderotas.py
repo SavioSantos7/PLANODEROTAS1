@@ -1481,7 +1481,7 @@ def generate_report_png(
     ax_footer.text(0.5, 0.6, "Gerado automaticamente pelo App de Alocação de Veículos por Cluster",
                    ha="center", va="center", fontsize=8, color=GRAY,
                    transform=ax_footer.transAxes)
-    ax_footer.axhline(0.85, color=TEAL, linewidth=1.5, transform=ax_footer.transAxes)
+    ax_footer.axhline(0.85, color=TEAL, linewidth=1.5)
 
     # ── Salva PNG ─────────────────────────────────────
     buf = _io.BytesIO()
