@@ -1691,9 +1691,12 @@ with st.sidebar:
 
 run = st.button("Rodar alocação", type="primary", disabled=not (plan_file and is_file))
 
+# Inicializa session_state
+if "resultado" not in st.session_state:
+    st.session_state.resultado = None
+
 if run:
     try:
-        # Aplica ocupação dos sliders sobrescrevendo as constantes no módulo
         import sys
         mod = sys.modules[__name__]
         mod.OCCUPANCY_M3 = occupancy_m3
@@ -1733,7 +1736,34 @@ if run:
         progress.progress(100, text="Concluído!")
         progress.empty()
 
+        # Salva tudo no session_state para persistir entre interações
+        st.session_state.resultado = {
+            "output_consolidado": output_consolidado,
+            "saldo_plano": saldo_plano,
+            "analyses": analyses,
+            "pdf_bytes": pdf_bytes,
+            "occupancy_m3": occupancy_m3,
+            "occupancy_kg": occupancy_kg,
+        }
+
+    except Exception as e:
+        st.error("Erro ao processar. Veja detalhes abaixo:")
+        st.exception(e)
+
+# Exibe resultados se existirem no session_state
+if st.session_state.resultado is not None:
+    r = st.session_state.resultado
+    output_consolidado = r["output_consolidado"]
+    saldo_plano        = r["saldo_plano"]
+    analyses           = r["analyses"]
+    pdf_bytes          = r["pdf_bytes"]
+    occupancy_m3       = r["occupancy_m3"]
+    occupancy_kg       = r["occupancy_kg"]
+
+    if run:
         st.success("✅ Processamento concluído!")
+    else:
+        st.info("ℹ️ Exibindo resultado da última alocação. Suba novos arquivos e clique em **Rodar alocação** para atualizar.")
 
         # =========================
         # MÉTRICAS EXECUTIVAS
@@ -1947,9 +1977,5 @@ if run:
 > - **Falta_Disponibilidade** — flag indicando que houve déficit nesse cluster
                 """)
 
-
-    except Exception as e:
-        st.error("Erro ao processar. Veja detalhes abaixo:")
-        st.exception(e)
 else:
     st.info("Faça upload dos 2 arquivos na barra lateral e clique em **Rodar alocação**.")
